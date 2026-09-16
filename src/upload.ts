@@ -6,8 +6,8 @@
  * never reach the import.
  */
 
-/** A local path (Node-family runtimes), a `File`, or a `Blob` with a name. */
-export type FileSource = string | File | { filename: string; blob: Blob }
+/** A local path (Node-family runtimes), a `File`/`Blob`, or a `Blob` with a name. */
+export type FileSource = string | Blob | { filename: string; blob: Blob }
 
 export interface FilePart {
   filename: string

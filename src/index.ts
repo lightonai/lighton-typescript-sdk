@@ -1,4 +1,7 @@
+export { ActiveRecord } from "./activeRecord.ts"
+export { ApiKey, type ApiKeyInit, type ApiKeyScope } from "./apikey.ts"
 export { LightOn } from "./client.ts"
+export type { Attribute, Facet } from "./contentType.ts"
 export {
   AttributeType,
   DownloadPurpose,
@@ -25,6 +28,16 @@ export {
   ServerError,
   StreamError,
 } from "./errors.ts"
+export {
+  type CreateOptions,
+  File,
+  File as LightOnFile,
+  type FileInit,
+  type FileListOptions,
+  type SaveOptions,
+  type WaitOptions,
+  waitAll,
+} from "./file.ts"
 export { ExtractJob, Job, ParseJob } from "./job.ts"
 export {
   asJsonSchema,
@@ -32,7 +45,7 @@ export {
   normalizeJsonSchema,
   type SchemaInput,
 } from "./schema.ts"
-export type { TagRef } from "./tag.ts"
+export { Tag, type TagInit, type TagRef } from "./tag.ts"
 export { DEFAULT_BASE_URL, type LightOnConfiguration } from "./types/config.ts"
 export type {
   AskEvent,
@@ -40,6 +53,7 @@ export type {
   SourcesEvent,
   TokenEvent,
 } from "./types/events.ts"
+export type { ExternalMetadata, Thumbnail } from "./types/file.ts"
 export type {
   AskResponse,
   AskResultItem,
@@ -57,6 +71,11 @@ export type {
   SearchResponse,
   SearchResultItem,
 } from "./types/index.ts"
+export type {
+  RootContentType,
+  WorkspaceSync,
+  WorkspaceTaxonomy,
+} from "./types/workspace.ts"
 export type { FileSource } from "./upload.ts"
 export type { AskOptions } from "./verbs/ask.ts"
 export type { ExtractAsyncOptions, ExtractOptions } from "./verbs/extract.ts"
@@ -64,3 +83,8 @@ export type { ParseAsyncOptions, ParseOptions } from "./verbs/parse.ts"
 export type { ScopeOptions } from "./verbs/scope.ts"
 export type { SearchOptions } from "./verbs/search.ts"
 export { VERSION } from "./version.ts"
+export {
+  type IngestOptions,
+  Workspace,
+  type WorkspaceInit,
+} from "./workspace.ts"
