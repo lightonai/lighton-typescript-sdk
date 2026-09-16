@@ -5,6 +5,10 @@ HEADER = // Generated from the LightOn OpenAPI schema. Do not edit by hand, run 
 test:  ## Run the test suite
 	pnpm vitest run
 
+.PHONY: test-types
+test-types:  ## Run the type-level tests
+	pnpm vitest run --typecheck.only
+
 .PHONY: e2e
 e2e:  ## Smoke-test the SDK against the live API (needs LIGHTON_API_KEY): make e2e ARGS="--only search"
 	node tests/e2e/cli.ts $(ARGS)

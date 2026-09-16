@@ -12,8 +12,25 @@ import {
   MalformedResponseError,
   RateLimitError,
 } from "./errors.ts"
+import type { ExtractJob, ParseJob } from "./job.ts"
+import type { SchemaInput } from "./schema.ts"
 import { DEFAULT_BASE_URL, type LightOnConfiguration } from "./types/config.ts"
+import type { AskEvent } from "./types/events.ts"
+import type {
+  AskResponse,
+  ExtractJobResponse,
+  ParseResponse,
+  SearchResponse,
+} from "./types/index.ts"
 import { camelize } from "./utils.ts"
+import { type AskOptions, ask } from "./verbs/ask.ts"
+import {
+  type ExtractAsyncOptions,
+  type ExtractOptions,
+  extract,
+} from "./verbs/extract.ts"
+import { type ParseAsyncOptions, type ParseOptions, parse } from "./verbs/parse.ts"
+import { type SearchOptions, search } from "./verbs/search.ts"
 
 /** Query-string values, before URLSearchParams encoding. */
 export type QueryValue = string | number | boolean | null | undefined
@@ -173,6 +190,51 @@ export class LightOn implements Transport {
     this.#gate = perMinute ? new RateGate(perMinute) : null
   }
 
+  // --- primary verbs ------------------------------------------------------
+  // Thin delegates to src/verbs/, which hold the request shaping. Composition rather
+  // than the Python SDK's mixins: same public surface, and this module stays transport.
+
+  /** {@inheritDoc ask} */
+  ask(query: string, options?: AskOptions & { stream?: false }): Promise<AskResponse>
+  ask(
+    query: string,
+    options: AskOptions & { stream: true },
+  ): AsyncGenerator<AskEvent, void, undefined>
+  ask(
+    query: string,
+    options: AskOptions & { stream?: boolean } = {},
+  ): Promise<AskResponse> | AsyncGenerator<AskEvent, void, undefined> {
+    // The overloads above are the contract; this hands off to the same pair below.
+    return options.stream
+      ? ask(this, query, options as AskOptions & { stream: true })
+      : ask(this, query, options as AskOptions & { stream?: false })
+  }
+
+  /** {@inheritDoc search} */
+  search(query: string, options: SearchOptions = {}): Promise<SearchResponse> {
+    return search(this, query, options)
+  }
+
+  /** {@inheritDoc parse} */
+  parse(options: ParseOptions & { mode?: "sync" }): Promise<ParseResponse>
+  parse(options: ParseAsyncOptions): Promise<ParseJob>
+  parse(options: ParseOptions & { mode?: string }): Promise<ParseResponse | ParseJob> {
+    return parse(this, options as ParseAsyncOptions)
+  }
+
+  /** {@inheritDoc extract} */
+  extract(
+    schema: SchemaInput,
+    options: ExtractOptions & { mode?: "sync" },
+  ): Promise<ExtractJobResponse>
+  extract(schema: SchemaInput, options: ExtractAsyncOptions): Promise<ExtractJob>
+  extract(
+    schema: SchemaInput,
+    options: ExtractOptions & { mode?: string },
+  ): Promise<ExtractJobResponse | ExtractJob> {
+    return extract(this, schema, options as ExtractAsyncOptions)
+  }
+
   /** Abort every in-flight request. The client is not reusable afterwards. */
   close(): void {
     this.#lifetime.abort(new Error("client closed"))
@@ -265,7 +327,11 @@ export class LightOn implements Transport {
     path: string,
     options: RequestOptions,
   ): Promise<Response> {
-    const url = `${this.#baseUrl}${path}${options.params ? buildQuery(options.params) : ""}`
+    // An absolute path is a pagination `next` link, which already carries its query.
+    // httpx passes those through untouched and so must this, or the base would be
+    // prepended to a complete URL.
+    const base = /^https?:\/\//.test(path) ? path : `${this.#baseUrl}${path}`
+    const url = `${base}${options.params ? buildQuery(options.params) : ""}`
     const headers: Record<string, string> = { Authorization: `Bearer ${this.#apiKey}` }
     let body = options.body
     if (options.json !== undefined) {
