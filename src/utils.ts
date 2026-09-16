@@ -62,9 +62,14 @@ function convert(value: unknown): unknown {
   return out
 }
 
-/** Something carrying a server-assigned numeric id, or the bare id. */
+/**
+ * Something carrying a server-assigned id, or the bare id.
+ *
+ * Structural on purpose: any resource with an `id` satisfies it, which is how `File`,
+ * `Workspace` and a plain id all pass to the same parameter.
+ */
 export type IdRef = number | { readonly id: number | string | null }
-/** A content type, or its path string. */
+/** A content type, or its path string. Structural, as {@link IdRef} is. */
 export type PathRef = string | { readonly path: string }
 
 /** Request body from an object, dropping nullish so the server applies its defaults. */
