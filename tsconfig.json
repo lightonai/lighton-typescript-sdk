@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2023",
-    "lib": ["ES2023", "DOM"],
+    "lib": ["ES2023", "ESNext.Disposable", "DOM"],
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "types": ["node"],
