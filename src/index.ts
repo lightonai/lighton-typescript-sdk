@@ -1,7 +1,16 @@
 export { ActiveRecord } from "./activeRecord.ts"
 export { ApiKey, type ApiKeyInit, type ApiKeyScope } from "./apikey.ts"
 export { LightOn } from "./client.ts"
-export type { Attribute, Facet } from "./contentType.ts"
+export {
+  type Attribute,
+  type BatchActionResult,
+  ContentType,
+  type ContentTypeListOptions,
+  type DefineAttributeOptions,
+  type DefineOptions,
+  type Facet,
+  type Template,
+} from "./contentType.ts"
 export {
   AttributeType,
   DownloadPurpose,
