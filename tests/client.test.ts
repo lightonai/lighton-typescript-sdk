@@ -453,3 +453,19 @@ test("maintenance is not retried like a 429", async () => {
   await expect(client.request("GET", "/x")).rejects.toBeInstanceOf(exc.MaintenanceError)
   expect(calls).toBe(1)
 })
+
+test("an absolute path is used as-is, so pagination `next` links work", async () => {
+  // `next` comes back as a complete URL carrying its own query string. Prepending the
+  // base to it would produce nonsense and silently truncate every list().
+  const seen: string[] = []
+  const client = makeClient((request) => {
+    seen.push(request.url)
+    return json(200, {})
+  })
+  await client.request("GET", "/api/v3/tags")
+  await client.request("GET", "https://api.lighton.ai/api/v3/tags?page=2")
+  expect(seen).toEqual([
+    "https://api.lighton.ai/api/v3/tags",
+    "https://api.lighton.ai/api/v3/tags?page=2",
+  ])
+})
