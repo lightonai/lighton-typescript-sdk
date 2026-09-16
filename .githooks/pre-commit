@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+b=$(git branch --show-current)
+if ! echo "$b" | grep -Eq '^(main|master|develop|(feat|feature|fix|bugfix|hotfix|release|chore)/[a-z0-9._/-]+)$'; then
+  echo "branch \"$b\" must be <type>/<description>, e.g. feat/add-retries (types: feat, feature, fix, bugfix, hotfix, release, chore)" >&2
+  exit 1
+fi
+pnpm biome check .
+pnpm tsc --noEmit
+pnpm vitest run

@@ -1,0 +1,22 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Test / tool caches
+coverage/
+.vitest/
+
+# Env
+.env
+.env.*
+!.env.example
+.envrc
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# npm packing output
+*.tgz

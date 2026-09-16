@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    // Source imports carry `.ts` so `node --experimental-strip-types` and vitest run the
+    // tree directly; tsdown bundles for the published build, so nothing emits them.
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+
+    "noEmit": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src", "tests", "*.config.ts"],
+  // Generated from the OpenAPI schema; validated by the server at runtime, and call
+  // sites are still type-checked. Mirrors [tool.ty.src] exclude in the Python SDK.
+  "exclude": ["src/types/api.ts", "dist", "node_modules"]
+}
