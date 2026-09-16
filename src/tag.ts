@@ -1,12 +1,100 @@
-/** Tags: a flat, company-wide label set you can scope queries to. */
+/**
+ * Tags: a flat, company-wide label set you can scope queries to.
+ *
+ * Active-record style, but the tags API is **list/create/delete only**: there is no
+ * `GET /tags/<id>`, so the inherited `get()` and `refresh()` throw rather than 404 at
+ * runtime. Tags scope `ask` and `search` through their `tags` option.
+ */
 
+import { ActiveRecord, listAll } from "./activeRecord.ts"
 import type { Transport } from "./client.ts"
 import { paginate } from "./utils.ts"
 
 export const TAGS_BASE = "/api/v3/tags"
+const NO_GET = "the tags API has no single-tag GET; use Tag.list(client)"
+
+export interface TagInit {
+  name?: string
+  description?: string
+  /** If true the system may auto-assign this tag; else it is user-only. */
+  autoAssign?: boolean
+}
+
+export class Tag extends ActiveRecord {
+  override id: number | null = null
+  name = ""
+  description = ""
+  autoAssign = true
+
+  /** Number of documents carrying this tag (read-only). */
+  documentCount?: number | null
+  createdAt?: string | null
+  updatedAt?: string | null
+
+  static override base = TAGS_BASE
+  static override resource = "tag"
+  static override fields = [
+    "id",
+    "name",
+    "description",
+    "autoAssign",
+    "documentCount",
+    "createdAt",
+    "updatedAt",
+  ]
+
+  constructor(init: TagInit = {}) {
+    super()
+    Object.assign(this, init)
+  }
+
+  /**
+   * Create this tag and bind the client for later lifecycle calls.
+   *
+   * @param client - The client to create the tag with and bind to `this`.
+   * @returns `this`, updated with the server-assigned id.
+   */
+  async create(client: Transport): Promise<this> {
+    const data = await client.request<Record<string, unknown>>("POST", TAGS_BASE, {
+      json: {
+        name: this.name,
+        description: this.description,
+        auto_assign: this.autoAssign,
+      },
+    })
+    return this.bind(client).absorb(data)
+  }
+
+  /**
+   * List every tag, following pagination to the end.
+   *
+   * @param client - The client to request with and bind to each result.
+   * @returns Every tag, bound to `client`.
+   */
+  static list(client: Transport): Promise<Tag[]> {
+    return listAll(Tag, client)
+  }
+
+  /**
+   * Not available: the tags API exposes no single-tag GET.
+   *
+   * Declared so the failure is a clear message at the call site rather than a 404 from
+   * a URL that was never going to exist. Use {@link Tag.list} instead.
+   *
+   * @throws Error - Always.
+   */
+  static get(): Promise<never> {
+    throw new Error(NO_GET)
+  }
+
+  /** @throws Error - Always: the tags API exposes no single-tag GET. */
+  override refresh(): Promise<never> {
+    throw new Error(NO_GET)
+  }
+}
 
 /** A `Tag`, its id, or its name. The three mix freely in one list. */
-export type TagRef = number | string | { readonly id: number | string | null }
+export type TagRef = number | string | Tag | { readonly id: number | string | null }
 
 interface TagRow {
   id: number
