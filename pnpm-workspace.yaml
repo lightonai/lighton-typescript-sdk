@@ -1,0 +1,9 @@
+# Supply-chain quarantine: ignore any version published in the last 3 days (4320 minutes),
+# so freshly-published (possibly compromised) versions aren't picked up until vetted.
+# Rolling window, each `pnpm install --lockfile-only` advances the cutoff.
+# Mirrors [tool.uv] exclude-newer = "3 days ago" in the Python SDK.
+minimumReleaseAge: 4320
+
+# simple-git-hooks needs its postinstall to wire .git/hooks.
+onlyBuiltDependencies:
+  - simple-git-hooks

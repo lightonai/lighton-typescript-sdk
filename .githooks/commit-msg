@@ -1,0 +1,6 @@
+#!/bin/sh
+# ponytail: greps the Conventional Commits regex directly instead of pulling a hook
+# package, two lines and one fewer pinned dependency to keep up to date.
+grep -Eq '^((Merge|Revert|fixup!|squash!) |(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\(.+\))?!?: .+)' "$1" && exit 0
+echo 'commit message must follow Conventional Commits, e.g. feat(client): add retries' >&2
+exit 1

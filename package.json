@@ -1,0 +1,75 @@
+{
+  "name": "@lighton/sdk",
+  "version": "0.0.0",
+  "description": "LightOn TypeScript SDK",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lightonai/lighton-typescript-sdk.git"
+  },
+  "homepage": "https://github.com/lightonai/lighton-typescript-sdk#readme",
+  "keywords": [
+    "lighton",
+    "rag",
+    "retrieval",
+    "search",
+    "sdk"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.cts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.18.0",
+  "sideEffects": false,
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "zod": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.2",
+    "@biomejs/biome": "^2.5.0",
+    "@types/node": "^22.20.0",
+    "openapi-typescript": "^7.13.0",
+    "publint": "^0.3.0",
+    "simple-git-hooks": "^2.13.0",
+    "tsdown": "^0.23.0",
+    "typescript": "~5.9.0",
+    "vitest": "^5.0.0",
+    "zod": "^4.0.0"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest run",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "type-check": "tsc --noEmit",
+    "prepack": "pnpm build"
+  },
+  "simple-git-hooks": {
+    "commit-msg": "sh .githooks/commit-msg \"$1\"",
+    "pre-commit": "sh .githooks/pre-commit"
+  }
+}
