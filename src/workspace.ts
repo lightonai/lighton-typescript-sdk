@@ -6,9 +6,11 @@
  */
 
 import { ActiveRecord, getOne, listAll } from "./activeRecord.ts"
+import { type BatchIngestJob, type BatchOptions, runBatch } from "./batch.ts"
 import type { Transport } from "./client.ts"
-import type { Role } from "./enums.ts"
+import { ExecMode, type Role } from "./enums.ts"
 import type { File, WaitOptions } from "./file.ts"
+import type { BatchIngest } from "./types/batch.ts"
 import type { WorkspaceSync, WorkspaceTaxonomy } from "./types/workspace.ts"
 
 const BASE = "/api/v3/workspaces"
@@ -144,6 +146,42 @@ export class Workspace extends ActiveRecord {
       options.tags ? { tags: options.tags } : {},
     )
     return options.wait ? created.wait(options) : created
+  }
+
+  /**
+   * Upload many files into this workspace, concurrently.
+   *
+   * Every local path is validated to exist **before** any upload starts. Staying under
+   * the API rate limit and honoring the 429 cooldown are the client's job, so they apply
+   * across uploads and status polls alike.
+   *
+   * @param files - Items to ingest: `File` objects and path strings, mixed. A string
+   *   containing `*`, `?` or `[` is expanded as a glob (`**` works); duplicates are
+   *   ignored. Files carrying a `blob` need no filesystem.
+   * @param options - Execution mode, error handling and concurrency. See
+   *   {@link BatchOptions}.
+   * @returns A {@link BatchIngest} inline, or a {@link BatchIngestJob} with
+   *   `mode: "async"`.
+   * @throws Error - If this workspace has no id, or an item has neither path nor blob.
+   * @throws Error - If any path is missing and `ignoreErrors` is unset.
+   */
+  ingestMany(
+    files: readonly (File | string)[],
+    options?: BatchOptions & { mode?: typeof ExecMode.sync },
+  ): Promise<BatchIngest>
+  ingestMany(
+    files: readonly (File | string)[],
+    options: BatchOptions & { mode: typeof ExecMode.async },
+  ): Promise<BatchIngestJob>
+  ingestMany(
+    files: readonly (File | string)[],
+    options: BatchOptions & { mode?: ExecMode } = {},
+  ): Promise<BatchIngest | BatchIngestJob> {
+    const client = this.boundClient()
+    return runBatch(client, this.id as number, files, {
+      ...options,
+      async: options.mode === ExecMode.async,
+    })
   }
 
   /**

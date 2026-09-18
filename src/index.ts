@@ -1,5 +1,6 @@
 export { ActiveRecord } from "./activeRecord.ts"
 export { ApiKey, type ApiKeyInit, type ApiKeyScope } from "./apikey.ts"
+export { BatchIngestJob, type BatchOptions } from "./batch.ts"
 export { LightOn } from "./client.ts"
 export {
   type Attribute,
@@ -55,6 +56,11 @@ export {
   type SchemaInput,
 } from "./schema.ts"
 export { Tag, type TagInit, type TagRef } from "./tag.ts"
+export type {
+  BatchIngest,
+  BatchProgress,
+  FailedIngest,
+} from "./types/batch.ts"
 export { DEFAULT_BASE_URL, type LightOnConfiguration } from "./types/config.ts"
 export type {
   AskEvent,
