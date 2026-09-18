@@ -33,6 +33,10 @@ type-check:  ## Type-check with tsc
 build:  ## Build the dual ESM+CJS bundle
 	pnpm tsdown
 
+.PHONY: check-docs
+check-docs:  ## Type-check every TypeScript snippet in the README
+	node scripts/check-readme.mjs
+
 .PHONY: check-package
 check-package: build  ## Validate the published package shape (exports, dual ESM/CJS types)
 	pnpm publint

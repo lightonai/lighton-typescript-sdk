@@ -244,7 +244,10 @@ export class File extends ActiveRecord {
    * @returns `this`, updated with the server-assigned id and initial status.
    * @throws Error - If no source or no `workspaceId` is set.
    */
-  async create(client: Transport, options: CreateOptions = {}): Promise<this> {
+  async create(
+    client: Transport,
+    options: CreateOptions = {},
+  ): Promise<this & { id: number }> {
     if (this.workspaceId === null || this.workspaceId === undefined) {
       throw new Error("workspaceId is required (or use Workspace.ingest)")
     }
@@ -266,7 +269,7 @@ export class File extends ActiveRecord {
     const data = await client.request<Record<string, unknown>>("POST", BASE, {
       body: form,
     })
-    return this.bind(client).absorb(data)
+    return this.bind(client).absorb(data) as this & { id: number }
   }
 
   /**

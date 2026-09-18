@@ -54,7 +54,7 @@ export class Tag extends ActiveRecord {
    * @param client - The client to create the tag with and bind to `this`.
    * @returns `this`, updated with the server-assigned id.
    */
-  async create(client: Transport): Promise<this> {
+  async create(client: Transport): Promise<this & { id: number }> {
     const data = await client.request<Record<string, unknown>>("POST", TAGS_BASE, {
       json: {
         name: this.name,
@@ -62,7 +62,7 @@ export class Tag extends ActiveRecord {
         auto_assign: this.autoAssign,
       },
     })
-    return this.bind(client).absorb(data)
+    return this.bind(client).absorb(data) as this & { id: number }
   }
 
   /**

@@ -108,11 +108,11 @@ export class Workspace extends ActiveRecord {
    * @param client - The client to create the workspace with and bind to `this`.
    * @returns `this`, updated with the server-assigned id and read-only fields.
    */
-  async create(client: Transport): Promise<this> {
+  async create(client: Transport): Promise<this & { id: number }> {
     const data = await client.request<Record<string, unknown>>("POST", BASE, {
       json: { name: this.name, description: this.description },
     })
-    return this.bind(client).absorb(data)
+    return this.bind(client).absorb(data) as this & { id: number }
   }
 
   /**
@@ -138,14 +138,17 @@ export class Workspace extends ActiveRecord {
    * @returns The created File, bound to this workspace's client.
    * @throws Error - If this workspace has not been created or retrieved yet.
    */
-  async ingest(file: File, options: IngestOptions = {}): Promise<File> {
+  async ingest(
+    file: File,
+    options: IngestOptions = {},
+  ): Promise<File & { id: number }> {
     const client = this.boundClient()
     file.workspaceId = this.id
     const created = await file.create(
       client,
       options.tags ? { tags: options.tags } : {},
     )
-    return options.wait ? created.wait(options) : created
+    return options.wait ? await created.wait(options) : created
   }
 
   /**
