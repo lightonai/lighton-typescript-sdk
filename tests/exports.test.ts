@@ -23,6 +23,7 @@ const RUNTIME_EXPORTS = [
   "Workspace",
   "waitAll",
   "ContentType",
+  "BatchIngestJob",
   // jobs
   "Job",
   "ParseJob",
