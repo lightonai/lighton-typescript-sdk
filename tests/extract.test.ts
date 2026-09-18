@@ -181,3 +181,39 @@ test("caller options are merged with the async flag, not replaced", async () => 
   })
   expect(body.options).toEqual({ hint: "invoice", async: true })
 })
+
+test("a schema already converted by zod is not converted a second time", async () => {
+  // Zod's own toJSONSchema() output carries a `~standard` marker with vendor "zod", so a
+  // `~standard` check would send it back through the converter and throw inside zod.
+  // Only `_zod` tells a live schema apart from a schema document.
+  const { z } = await import("zod")
+  const Person = z.object({ name: z.string() })
+  const Pair = z.object({ left: Person, right: Person })
+  const converted = z.toJSONSchema(Pair, {
+    target: "draft-2020-12",
+    io: "output",
+    reused: "ref",
+  })
+  expect("$defs" in converted, "this case needs a schema that carries $defs").toBe(true)
+
+  let body: Record<string, unknown> = {}
+  const client = makeClient(async (request) => {
+    body = (await request.json()) as Record<string, unknown>
+    return json(EXTRACTED)
+  })
+  await client.extract(converted as Record<string, unknown>, { ingested: 7 })
+
+  const sent = JSON.stringify(body.schema)
+  expect(sent).not.toContain("$ref")
+  expect(sent).not.toContain("$defs")
+})
+
+test("a Standard Schema from another library is rejected by name", async () => {
+  const client = makeClient(() => json(EXTRACTED))
+  const valibotish = {
+    "~standard": { vendor: "valibot", version: 1, validate: () => ({ value: 1 }) },
+  }
+  await expect(client.extract(valibotish as never, { ingested: 7 })).rejects.toThrow(
+    /unsupported schema library "valibot"/,
+  )
+})

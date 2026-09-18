@@ -26,13 +26,41 @@ interface StandardSchemaLike {
  */
 export type SchemaInput = JsonSchema | StandardSchemaLike
 
-function isStandardSchema(schema: SchemaInput): schema is StandardSchemaLike {
+/**
+ * Whether this is a live Zod schema, as opposed to a JSON Schema object.
+ *
+ * Keyed on `_zod`, Zod v4's own marker. `~standard` cannot be used here, however natural
+ * it looks: Zod's `toJSONSchema()` **output** also carries a `~standard`, with the same
+ * `"zod"` vendor, so converting on that would convert an already-converted schema a
+ * second time and throw deep inside Zod. An own `type` is no good either, since a Zod
+ * schema has one (`"object"`) just as a JSON Schema does.
+ */
+function isZodSchema(schema: object): boolean {
+  return "_zod" in schema
+}
+
+function isStandardSchema(schema: object): schema is StandardSchemaLike {
   return (
-    typeof schema === "object" &&
-    schema !== null &&
     "~standard" in schema &&
     typeof (schema as StandardSchemaLike)["~standard"] === "object"
   )
+}
+
+/** Keywords that only a JSON Schema carries. `type` is excluded: Zod schemas have one. */
+const JSON_SCHEMA_KEYS = [
+  "$schema",
+  "properties",
+  "items",
+  "anyOf",
+  "allOf",
+  "oneOf",
+  "$ref",
+  "enum",
+  "const",
+]
+
+function looksLikeJsonSchema(schema: object): boolean {
+  return JSON_SCHEMA_KEYS.some((key) => key in schema)
 }
 
 function isPlainObject(value: unknown): value is JsonSchema {
@@ -133,13 +161,10 @@ export function normalizeJsonSchema(schema: JsonSchema): JsonSchema {
  * @throws TypeError - If `schema` is neither.
  */
 export async function asJsonSchema(schema: SchemaInput): Promise<JsonSchema> {
-  if (isStandardSchema(schema)) {
-    const vendor = schema["~standard"].vendor
-    if (vendor !== "zod") {
-      throw new TypeError(
-        `unsupported schema library ${JSON.stringify(vendor)}: pass a Zod schema or a plain JSON Schema object`,
-      )
-    }
+  if (!isPlainObject(schema)) {
+    throw new TypeError("schema must be a Zod schema or a plain JSON Schema object")
+  }
+  if (isZodSchema(schema)) {
     // Imported only when a Zod schema is actually handed over, which is what keeps zod
     // an optional peer dependency rather than a runtime one.
     const { toJSONSchema } = await import("zod")
@@ -149,6 +174,13 @@ export async function asJsonSchema(schema: SchemaInput): Promise<JsonSchema> {
     }) as JsonSchema
     return normalizeJsonSchema(converted)
   }
-  if (isPlainObject(schema)) return normalizeJsonSchema(schema)
-  throw new TypeError("schema must be a Zod schema or a plain JSON Schema object")
+  // A Standard Schema from another library is a validator, not a schema document. Say so
+  // rather than posting it to the API and letting the server puzzle over it.
+  if (isStandardSchema(schema) && !looksLikeJsonSchema(schema)) {
+    const vendor = schema["~standard"].vendor
+    throw new TypeError(
+      `unsupported schema library ${JSON.stringify(vendor)}: pass a Zod schema or a plain JSON Schema object`,
+    )
+  }
+  return normalizeJsonSchema(schema)
 }

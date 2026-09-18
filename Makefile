@@ -11,7 +11,8 @@ test-types:  ## Run the type-level tests
 
 .PHONY: e2e
 e2e:  ## Smoke-test the SDK against the live API (needs LIGHTON_API_KEY): make e2e ARGS="--only search"
-	node tests/e2e/cli.ts $(ARGS)
+	# --experimental-strip-types is required on Node 22 and accepted on 24+.
+	node --experimental-strip-types --disable-warning=ExperimentalWarning tests/e2e/cli.ts $(ARGS)
 
 .PHONY: install-hooks
 install-hooks:  ## Install the git hooks
