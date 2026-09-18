@@ -44,3 +44,19 @@ test("multi-underscore keys fold left to right", () => {
     endpointCategoryNames: string[]
   }>()
 })
+
+test("create() promises a persisted id, so callers need no non-null assertion", async () => {
+  // Without this, `Workspace.get(client, ws.id)` on the very next line does not compile,
+  // because `id` is nullable on a fresh instance. create() either sets it or throws.
+  const { LightOn } = await import("../src/client.ts")
+  const { Workspace } = await import("../src/workspace.ts")
+  const { ApiKey } = await import("../src/apikey.ts")
+  const client = new LightOn("k")
+
+  expectTypeOf(new Workspace({ name: "a" }).create(client)).resolves.toExtend<{
+    id: number
+  }>()
+  expectTypeOf(new ApiKey({ name: "a" }).create(client)).resolves.toExtend<{
+    id: string
+  }>()
+})

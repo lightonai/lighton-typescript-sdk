@@ -92,7 +92,7 @@ export class ApiKey extends ActiveRecord {
    * @param client - The client to create the key with and bind to `this`.
    * @returns `this`, updated with the id and the one-time plaintext `key`.
    */
-  async create(client: Transport): Promise<this> {
+  async create(client: Transport): Promise<this & { id: string }> {
     const data = await client.request<Record<string, unknown>>("POST", BASE, {
       json: {
         name: this.name,
@@ -100,7 +100,7 @@ export class ApiKey extends ActiveRecord {
         scopes: this.#scopePayload(),
       },
     })
-    return this.bind(client).absorb(data)
+    return this.bind(client).absorb(data) as this & { id: string }
   }
 
   /**
