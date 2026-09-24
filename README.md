@@ -439,6 +439,34 @@ are not unique, so it returns every match; check the length if you need exactly 
 deletes **nothing**, which surfaces as `NotFoundError`. There is no partial-success report because
 there is no partial success. An empty list is a local no-op.
 
+### Listing and filtering
+
+`workspaceId` and `title` cover the common case. Any other filter the endpoint accepts goes under
+`filters`, by its API name, and is typed from the API schema, so a misspelled status is a compile
+error rather than an empty result:
+
+```ts
+import { File } from "@lighton-ai/sdk"
+
+// Find the document a third-party record was ingested from
+const [origin] = await File.list(client, {
+  workspaceId: 42,
+  filters: { external_metadata__external_id: "JIRA-123" },
+})
+
+// Newest embedded files carrying tag 7
+const recent = await File.list(client, {
+  workspaceId: 42,
+  filters: { status: "embedded", tag_id: "7", ordering: "-created_at" },
+})
+```
+
+The names are the API's own (`tag_id`, not `tagId`): like `attribute` strings on search, they are
+the server's query grammar, passed through untouched. `Workspace.list`, `Tag.list` and
+`ApiKey.list` take `filters` the same way, e.g. `{ filters: { name: "Legal" } }` or
+`{ filters: { is_expired: false } }`. There is no `page` filter, because `list()` follows every page
+itself; `page_size` is accepted and only changes how many round trips a listing takes.
+
 ### Getting the bytes back
 
 ```ts
@@ -847,6 +875,10 @@ await fetched.delete()
 
 `key` is returned **only by `create()`**. A later `refresh()` does not wipe it, because the SDK only
 overwrites fields a response actually carried, but no other call will ever give it back to you.
+
+It is also kept out of logs: `key.key` reads it, but `console.log(key)`, `JSON.stringify(key)` and
+`{ ...key }` all leave it out, the way the Python SDK's `SecretStr` does. Logging a key object by
+accident is the likeliest way a secret leaks.
 
 ## Errors
 

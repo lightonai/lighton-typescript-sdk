@@ -7,10 +7,11 @@
 
 import { ActiveRecord, getOne, listAll } from "./activeRecord.ts"
 import { type BatchIngestJob, type BatchOptions, runBatch } from "./batch.ts"
-import type { Transport } from "./client.ts"
+import type { Query, Transport } from "./client.ts"
 import { ExecMode, type Role } from "./enums.ts"
 import type { File, WaitOptions } from "./file.ts"
 import type { BatchIngest } from "./types/batch.ts"
+import type { WorkspaceFilters } from "./types/index.ts"
 import type { WorkspaceSync, WorkspaceTaxonomy } from "./types/workspace.ts"
 
 const BASE = "/api/v3/workspaces"
@@ -25,6 +26,11 @@ export interface IngestOptions extends WaitOptions {
   wait?: boolean
   /** Tag ids to assign to the document on upload. */
   tags?: number[]
+}
+
+export interface WorkspaceListOptions {
+  /** Endpoint filters under their API names, e.g. `name`, `user_role`, `ordering`. */
+  filters?: WorkspaceFilters
 }
 
 export class Workspace extends ActiveRecord {
@@ -82,13 +88,17 @@ export class Workspace extends ActiveRecord {
   /**
    * List every workspace, following pagination to the end.
    *
-   * Only this call returns `taxonomy` and the other listing-only extras.
+   * Only a listing returns `taxonomy` and the other listing-only extras.
    *
    * @param client - The client to request with and bind to each result.
-   * @returns Every workspace, bound to `client`.
+   * @param options - Endpoint filters under `filters`, by their API names.
+   * @returns Every matching workspace, bound to `client`.
    */
-  static list(client: Transport): Promise<Workspace[]> {
-    return listAll(Workspace, client)
+  static list(
+    client: Transport,
+    options: WorkspaceListOptions = {},
+  ): Promise<Workspace[]> {
+    return listAll(Workspace, client, options.filters as Query | undefined)
   }
 
   /**

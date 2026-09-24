@@ -16,7 +16,7 @@ import { DownloadPurpose, type FileStatus, type ReprocessLevel } from "./enums.t
 import { LightOnError } from "./errors.ts"
 import { resolveTagIds, type TagRef } from "./tag.ts"
 import type { ExternalMetadata, Thumbnail } from "./types/file.ts"
-import type { Page } from "./types/index.ts"
+import type { FileFilters, Page } from "./types/index.ts"
 import { basename, toFilePart } from "./upload.ts"
 import { compact, type IdRef, ids, type PathRef, path as toPath } from "./utils.ts"
 
@@ -46,6 +46,12 @@ export interface FileInit {
 export interface FileListOptions {
   workspaceId?: number
   title?: string
+  /**
+   * Any other filter the endpoint accepts, under its API name: `status`, `tag_id`,
+   * `external_metadata__external_id`, `ordering`, date ranges... Where it overlaps
+   * `workspaceId` or `title`, those win.
+   */
+  filters?: FileFilters
 }
 
 export interface CreateOptions {
@@ -149,17 +155,18 @@ export class File extends ActiveRecord {
   }
 
   /**
-   * List files, optionally filtered to one workspace.
+   * List files, following pagination to the end.
    *
    * @param client - The client to request with and bind to each result.
-   * @param options - `workspaceId` and `title` filters.
-   * @returns Every matching file, following pagination to the end.
+   * @param options - `workspaceId`, `title`, and any other endpoint filter under
+   *   `filters`.
+   * @returns Every matching file.
    */
   static list(client: Transport, options: FileListOptions = {}): Promise<File[]> {
-    const params = compact({
-      workspace_id: options.workspaceId,
-      title: options.title,
-    }) as Query
+    const params = {
+      ...options.filters,
+      ...compact({ workspace_id: options.workspaceId, title: options.title }),
+    } as Query
     return listAll(File, client, params)
   }
 

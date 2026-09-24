@@ -75,3 +75,20 @@ test("save patches name and scopes", async () => {
     scopes: [{ workspace_id: 1, role: "editor" }],
   })
 })
+
+test("the secret stays out of logs, JSON and spreads, yet stays readable", async () => {
+  // The TypeScript counterpart of pydantic's SecretStr: a key logged by accident is the
+  // likeliest way one leaks, so it is non-enumerable rather than hidden behind a getter.
+  const { inspect } = await import("node:util")
+  const client = makeClient(() => json({ id: "k1", name: "ci", key: "sk-secret" }))
+  const key = await new ApiKey({ name: "ci" }).create(client)
+
+  expect(key.key).toBe("sk-secret")
+  expect(JSON.stringify(key)).not.toContain("sk-secret")
+  expect(inspect(key)).not.toContain("sk-secret")
+  expect({ ...key }).not.toHaveProperty("key")
+})
+
+test("a key never created carries no hidden secret either", () => {
+  expect(new ApiKey({ name: "ci" }).key).toBeUndefined()
+})

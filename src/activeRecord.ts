@@ -140,7 +140,10 @@ export async function listAll<T extends ActiveRecord>(
   client: Transport,
   params?: Query,
 ): Promise<T[]> {
-  const rows = await paginate<Record<string, unknown>>(client, cls.base, params)
+  // `page` would start the walk part-way through and silently drop what came before.
+  // The filter types already omit it; this covers untyped callers.
+  const { page: _page, ...query } = params ?? {}
+  const rows = await paginate<Record<string, unknown>>(client, cls.base, query)
   return rows.map((row) => ActiveRecord.hydrate(cls, client, row))
 }
 

@@ -60,3 +60,19 @@ test("create() promises a persisted id, so callers need no non-null assertion", 
     id: string
   }>()
 })
+
+test("list filters are typed from the schema, and refuse `page`", async () => {
+  const { File } = await import("../src/file.ts")
+  const { LightOn } = await import("../src/client.ts")
+  const client = new LightOn("k")
+  type Options = NonNullable<Parameters<typeof File.list>[1]>
+  type Filters = NonNullable<Options["filters"]>
+
+  expectTypeOf<Filters>().toHaveProperty("external_metadata__external_id")
+  expectTypeOf<Filters>().toHaveProperty("page_size")
+  expectTypeOf<Filters>().not.toHaveProperty("page")
+
+  // An unknown status is a type error, not a silently empty listing.
+  // @ts-expect-error "embeded" is not a status the API accepts
+  void File.list(client, { filters: { status: "embeded" } })
+})
