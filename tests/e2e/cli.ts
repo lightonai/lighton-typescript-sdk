@@ -204,6 +204,24 @@ step("upload", "ingest (blocking), getByName, save title, list", async (c) => {
   )
   say(`external metadata merged: ${got.externalId} / ${got.docType}`)
 
+  // Finding a document by its origin id is what external metadata is for. The miss case
+  // is what proves the filter reached the server rather than being dropped on the way.
+  const byOrigin = await File.list(c.client, {
+    workspaceId: ws.id,
+    filters: { external_metadata__external_id: `e2e-${c.stamp}` },
+  })
+  assert.deepEqual(
+    byOrigin.map((x) => x.id),
+    [f.id],
+    "filter by external id did not find the file",
+  )
+  const noOrigin = await File.list(c.client, {
+    workspaceId: ws.id,
+    filters: { external_metadata__external_id: "e2e-no-such-origin" },
+  })
+  assert.equal(noOrigin.length, 0, "an unmatched external id still returned files")
+  say("list filtered by external id: 1 hit, and 0 for an unknown id")
+
   const listed = await File.list(c.client, { workspaceId: ws.id })
   assert.ok(
     listed.some((x) => x.id === f.id),
@@ -853,6 +871,10 @@ step("keys", "create (scoped), list, get, save, delete", async (c) => {
   )
   c.cleanup.push(() => key.delete())
   assert.ok(key.key, "create() did not return the one-time secret")
+  assert.ok(
+    !JSON.stringify(key).includes(key.key),
+    "the secret leaks into JSON.stringify(key)",
+  )
   say(`created key ${key.id} (prefix ${key.prefix}, secret returned once)`)
 
   const all = await ApiKey.list(c.client)

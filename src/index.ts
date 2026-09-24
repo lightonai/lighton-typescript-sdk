@@ -1,4 +1,5 @@
 export { ActiveRecord } from "./activeRecord.ts"
+export type { ApiKeyListOptions } from "./apikey.ts"
 export { ApiKey, type ApiKeyInit, type ApiKeyScope } from "./apikey.ts"
 export { BatchIngestJob, type BatchOptions } from "./batch.ts"
 export { LightOn } from "./client.ts"
@@ -55,6 +56,7 @@ export {
   normalizeJsonSchema,
   type SchemaInput,
 } from "./schema.ts"
+export type { TagListOptions } from "./tag.ts"
 export { Tag, type TagInit, type TagRef } from "./tag.ts"
 export type {
   BatchIngest,
@@ -70,12 +72,14 @@ export type {
 } from "./types/events.ts"
 export type { ExternalMetadata, Thumbnail } from "./types/file.ts"
 export type {
+  ApiKeyFilters,
   AskResponse,
   AskResultItem,
   ExtractDocument,
   ExtractJobResponse,
   ExtractResult,
   ExtractUsage,
+  FileFilters,
   JobProgress,
   Page,
   ParseDocument,
@@ -85,6 +89,8 @@ export type {
   ParseUsage,
   SearchResponse,
   SearchResultItem,
+  TagFilters,
+  WorkspaceFilters,
 } from "./types/index.ts"
 export type {
   RootContentType,
@@ -98,6 +104,7 @@ export type { ParseAsyncOptions, ParseOptions } from "./verbs/parse.ts"
 export type { ScopeOptions } from "./verbs/scope.ts"
 export type { SearchOptions } from "./verbs/search.ts"
 export { VERSION } from "./version.ts"
+export type { WorkspaceListOptions } from "./workspace.ts"
 export {
   type IngestOptions,
   Workspace,

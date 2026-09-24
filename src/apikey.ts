@@ -7,8 +7,9 @@
  */
 
 import { ActiveRecord, getOne, listAll } from "./activeRecord.ts"
-import type { Transport } from "./client.ts"
+import type { Query, Transport } from "./client.ts"
 import type { Role } from "./enums.ts"
+import type { ApiKeyFilters } from "./types/index.ts"
 
 const BASE = "/api/v3/keys"
 
@@ -26,6 +27,11 @@ export interface ApiKeyInit {
   scopes?: ApiKeyScope[]
 }
 
+export interface ApiKeyListOptions {
+  /** Endpoint filters under their API names, e.g. `is_expired`. */
+  filters?: ApiKeyFilters
+}
+
 export class ApiKey extends ActiveRecord {
   /** String id, unlike every other resource. */
   override id: string | null = null
@@ -36,8 +42,15 @@ export class ApiKey extends ActiveRecord {
   /** Non-secret key prefix for identification (read-only). */
   prefix?: string | null
   createdAt?: string | null
-  /** The plaintext secret. Returned by `create()` only, once. */
-  key?: string | null
+  /**
+   * The plaintext secret. Returned by `create()` only, once.
+   *
+   * Readable as `apiKey.key`, but non-enumerable, so `console.log`, `util.inspect`,
+   * `JSON.stringify` and object spread all leave it out. This is the TypeScript
+   * counterpart of the Python SDK's `SecretStr`: a key logged by accident is the likeliest
+   * way one leaks.
+   */
+  declare key?: string | null
 
   static override base = BASE
   static override resource = "api key"
@@ -53,17 +66,28 @@ export class ApiKey extends ActiveRecord {
 
   constructor(init: ApiKeyInit = {}) {
     super()
+    // Defined here rather than as a class field, which would make it enumerable. absorb()
+    // later assigns through this same property, so it stays hidden once populated.
+    Object.defineProperty(this, "key", {
+      value: undefined,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    })
     Object.assign(this, init)
   }
 
   /**
-   * List every API key. The plaintext secret is never included.
+   * List every API key, following pagination to the end.
+   *
+   * The plaintext secret is never included.
    *
    * @param client - The client to request with and bind to each result.
-   * @returns Every key, bound to `client`.
+   * @param options - Endpoint filters under `filters`, by their API names.
+   * @returns Every matching API key, bound to `client`.
    */
-  static list(client: Transport): Promise<ApiKey[]> {
-    return listAll(ApiKey, client)
+  static list(client: Transport, options: ApiKeyListOptions = {}): Promise<ApiKey[]> {
+    return listAll(ApiKey, client, options.filters as Query | undefined)
   }
 
   /**

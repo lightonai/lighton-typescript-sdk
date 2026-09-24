@@ -107,6 +107,13 @@ Adding a fourth opaque key means adding a test that fails without it.
   Free functions are less code and let each resource have an honest signature, which is what
   `Workspace.list()` (no filters), `File.list()` (two) and `Tag.get()` (throws) actually need.
 - **`list()` follows pagination to the end.** No silent truncation.
+- **Every `list()` takes `filters`, typed from the generated schema under the API's own
+  parameter names** (`status`, `tag_id`, `external_metadata__external_id`). This is the port of the
+  Python SDK's `list(**params)`, which forwards any keyword. The names stay snake_case on purpose:
+  like `attribute` strings, they are the server's query grammar, and being generated they cannot
+  drift. `page` is omitted from the types and stripped at runtime, because starting part-way
+  through would silently drop earlier pages; `page_size` stays, since it only changes the number
+  of round trips. Where `File.list`'s camelCase `workspaceId`/`title` overlap a filter, they win.
 - **Operating on a non-persisted instance throws** via `boundClient()`.
 - **Curated shapes are independent of the generated types.** Hand-written models give stable, clean
   developer experience; generated ones are noisy and get regenerated.
@@ -134,6 +141,21 @@ Adding a fourth opaque key means adding a test that fails without it.
   rejected where a content type is expected. Widening `PathRef`/`IdRef` with an index signature fixes
   that but then rejects declared types like `File` and `ContentType`, which is the common case. Real
   code passes a variable, which is unaffected.
+- **`ApiKey.key` is non-enumerable**, the counterpart of pydantic's `SecretStr`. It reads normally,
+  but `console.log`, `util.inspect`, `JSON.stringify` and object spread skip it. It is a `declare`
+  field defined in the constructor: a plain class field would be defined as an ordinary, enumerable
+  property before the constructor runs. `absorb()` assigns through the existing property, so it
+  stays hidden once populated.
+
+## Known gaps against the Python SDK
+
+Recorded so they are deliberate rather than forgotten.
+
+- **No client-side JSON Schema meta-validation.** The Python SDK checks a hand-written schema dict
+  against the draft-2020-12 meta-schema before sending it, with `jsonschema`. Here a malformed
+  schema reaches the API, which answers with a 422. There is no lightweight equivalent worth a
+  runtime dependency; if it becomes a support cost, `ajv` could follow the Zod pattern as an
+  optional peer dependency, imported only when present.
 
 ## Serialization
 

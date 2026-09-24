@@ -7,7 +7,8 @@
  */
 
 import { ActiveRecord, listAll } from "./activeRecord.ts"
-import type { Transport } from "./client.ts"
+import type { Query, Transport } from "./client.ts"
+import type { TagFilters } from "./types/index.ts"
 import { paginate } from "./utils.ts"
 
 export const TAGS_BASE = "/api/v3/tags"
@@ -18,6 +19,11 @@ export interface TagInit {
   description?: string
   /** If true the system may auto-assign this tag; else it is user-only. */
   autoAssign?: boolean
+}
+
+export interface TagListOptions {
+  /** Endpoint filters under their API names, e.g. `name`, `auto_assign`. */
+  filters?: TagFilters
 }
 
 export class Tag extends ActiveRecord {
@@ -69,10 +75,11 @@ export class Tag extends ActiveRecord {
    * List every tag, following pagination to the end.
    *
    * @param client - The client to request with and bind to each result.
-   * @returns Every tag, bound to `client`.
+   * @param options - Endpoint filters under `filters`, by their API names.
+   * @returns Every matching tag, bound to `client`.
    */
-  static list(client: Transport): Promise<Tag[]> {
-    return listAll(Tag, client)
+  static list(client: Transport, options: TagListOptions = {}): Promise<Tag[]> {
+    return listAll(Tag, client, options.filters as Query | undefined)
   }
 
   /**
