@@ -120,7 +120,7 @@ cd /path/to/lighton-typescript-sdk
 pnpm link --global
 
 cd /path/to/your-project
-pnpm link --global @lighton/sdk
+pnpm link --global @lighton-ai/sdk
 ```
 
 Or install straight from a branch, for reviewing someone else's PR or testing on a machine without
@@ -133,7 +133,7 @@ pnpm add "github:THEIR_USERNAME/lighton-typescript-sdk#feature/their-feature"
 
 Set `LIGHTON_API_KEY` in the consuming project's environment as usual, see the [README](README.md).
 
-Undo a link with `pnpm unlink --global @lighton/sdk`.
+Undo a link with `pnpm unlink --global @lighton-ai/sdk`.
 
 ### 5. Running against the live API
 

@@ -1,0 +1,121 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # create the GitHub Release
+  id-token: write   # npm trusted publishing (OIDC) and provenance
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history + tags for the changelog
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          # Trusted publishing needs npm >= 11.5.1. Node 24 bundles it, which avoids an
+          # `npm install -g npm@latest` in the one job that holds publish rights.
+          node-version: 24
+          cache: pnpm
+
+      - name: Check the npm CLI supports trusted publishing
+        run: |
+          npm_version=$(npm --version)
+          if [ "$(printf '%s\n' 11.5.1 "$npm_version" | sort -V | head -1)" != "11.5.1" ]; then
+            echo "::error::npm $npm_version is too old for trusted publishing, need >= 11.5.1"
+            exit 1
+          fi
+
+      - name: Check tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag != package version $pkg, use 'make release VERSION=$tag'"
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+      - run: make build
+      - run: make check-package
+
+      # One tarball, published and attached to the release, so what people download from
+      # GitHub is byte-for-byte what npm serves. --ignore-scripts: already built, and no
+      # lifecycle script should run in the job that can publish.
+      - name: Pack
+        id: pack
+        run: echo "tarball=$(npm pack --ignore-scripts | tail -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@v4
+        id: cliff
+        with:
+          args: --latest --strip header
+
+      - name: Assemble release notes
+        run: |
+          # Annotated-tag message (from `make release DESC=...`) goes above the changelog.
+          if [ "$(git cat-file -t "$GITHUB_REF_NAME")" = "tag" ]; then
+            git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > notes.md
+            printf '\n' >> notes.md
+          fi
+          cat "${{ steps.cliff.outputs.changelog }}" >> notes.md
+
+      # Trusted publishing (OIDC) is the intended path: no long-lived token, provenance
+      # generated automatically. NPM_TOKEN exists only to bootstrap the very first
+      # release, before a trusted publisher can be configured on the package; delete the
+      # secret once it is. npm tries OIDC first and falls back to the token.
+      #
+      # Provenance only from a public repository: the registry rejects --provenance from a
+      # private one with a 422, which would fail the release rather than just skip it.
+      - name: Publish to npm
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > "$HOME/.npmrc"
+          fi
+          provenance="--provenance"
+          if [ "$REPO_PRIVATE" = "true" ]; then
+            echo "::warning::private repository, publishing without provenance"
+            provenance=""
+          fi
+          npm publish "${{ steps.pack.outputs.tarball }}" $provenance --access public
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" "${{ steps.pack.outputs.tarball }}"
+          --title "$GITHUB_REF_NAME"
+          --notes-file notes.md
+
+      - name: Announce on Slack
+        env:
+          WEBHOOK: ${{ secrets.RELEASE_SLACK_WEBHOOK_URL }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "::warning::RELEASE_SLACK_WEBHOOK_URL is not set, skipping the announcement"
+            exit 0
+          fi
+          # Escape Slack's entities first (& < > are markup to it, so an unescaped
+          # "<SDK>" in a commit message would vanish), then markdown -> mrkdwn,
+          # which renders neither "### x" nor "**bold**". Truncated well under
+          # Slack's 40k text limit; the link carries the full notes either way.
+          body=$(sed -e 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' notes.md \
+               | sed -E 's/^#+ +(.*)$/*\1*/; s/\*\*([^*]+)\*\*/*\1*/g' \
+               | head -c 3500)
+          jq -n --arg tag "$GITHUB_REF_NAME" --arg url "$RELEASE_URL" \
+                --arg repo "$GITHUB_REPOSITORY" --arg body "$body" \
+             '{text: ("*\($repo) \($tag)* released\n<\($url)|Release notes> · `pnpm add @lighton-ai/sdk`\n\n\($body)")}' \
+             > slack.json
+          curl -sS --fail-with-body -X POST -H 'Content-Type: application/json' \
+               --data @slack.json "$WEBHOOK"
