@@ -30,6 +30,8 @@ src/
     index.ts        curated camelCase aliases over api.ts
     config.ts events.ts file.ts workspace.ts batch.ts
 tests/              one module per source module, plus e2e/cli.ts
+scripts/            check-readme.mjs, behind `make check-docs`
+.github/workflows/  lint, tests (Node 22/24/26), release, quarantine-guard
 ```
 
 `types/` holds pure data shapes only. Anything with behavior (`Workspace`, `BatchIngestJob`) lives at
@@ -242,6 +244,12 @@ drains, then the error is rethrown.
   above has a regression test naming what breaks without it.
 - **`make test` does not type-check.** Vitest strips types without checking them, so
   `make type-check` and `make test-types` are separate gates and both run in CI.
+- **`make check-docs` compiles every README block as its own module**, keeping its real
+  imports. A snippet that uses a name without importing it fails, and so does one importing
+  something the SDK does not export. This matters most for `File`: without the import it
+  silently resolves to the DOM's global `File`, and a reader copying the snippet gets a
+  baffling error. Names the prose introduces (`client`, `ws`, `doc`) are declared once in the
+  script; SDK names deliberately are not.
 - **`tests/exports.test.ts` pins the public surface**, in both directions, the way the Python SDK's
   `__all__` does.
 - **`tests/e2e/cli.ts` is not collected by vitest.** It runs against the live API with
@@ -256,10 +264,34 @@ drains, then the error is rethrown.
 > *triggering* one requires an explicit, current instruction. Prior approval for other work never
 > carries over to this.
 
+Publishing happens only in `.github/workflows/release.yml`, on a `v*` tag, through **npm
+trusted publishing** (OIDC): no long-lived token, and provenance is attached automatically.
+
+- **Built with pnpm, published with the npm CLI.** Trusted publishing is documented for the npm
+  CLI only, and needs npm 11.5.1 or newer. The job pins Node 24, whose bundled npm clears that
+  bar, rather than running `npm install -g npm@latest` in the one job holding publish rights.
+- **One tarball is published and attached to the GitHub Release**, so what people download from
+  GitHub is byte-for-byte what npm serves. It is packed with `--ignore-scripts`: nothing is
+  rebuilt, and no lifecycle script runs where publishing is possible.
+- **`repository.url` must exactly match the GitHub repository**, or trusted publishing refuses
+  the upload.
+- **Provenance needs a public repository.** The registry rejects `--provenance` from a private
+  one with a 422, so the flag follows `github.event.repository.private` rather than failing a
+  release outright.
+- **`publishConfig.access` is `public`**, because a scoped package publishes as restricted by
+  default. Provenance is deliberately *not* in `publishConfig`: it would make a local
+  `npm publish` fail outright, which is the one escape hatch for a first release.
+- **`NPM_TOKEN` exists only to bootstrap the first release**, before a trusted publisher can be
+  configured on the package. npm tries OIDC first and falls back to it. Delete the secret once
+  trusted publishing is set up, and switch the package to "require two-factor authentication and
+  disallow tokens".
+
 Version is single-sourced from `package.json`. `VERSION` is injected at build time by `tsdown`;
 never hard-code it.
 
 The supply-chain quarantine (`minimumReleaseAge` in `pnpm-workspace.yaml`) ignores any version
 published in the last three days, so a freshly-compromised release is not picked up before it is
-vetted. A CI guard fails any PR that changes it. Expect `pnpm install` to resolve slightly older
+vetted. A CI guard fails any PR that changes it, including `minimumReleaseAgeExclude` and the
+`.npmrc` spelling `minimum-release-age`, since either is a way around the quarantine that
+leaves the headline setting untouched. Make that guard a required check in branch protection. Expect `pnpm install` to resolve slightly older
 versions than `latest`; that is the point.

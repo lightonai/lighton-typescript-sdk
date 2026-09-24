@@ -1,5 +1,5 @@
 {
-  "name": "@lighton/sdk",
+  "name": "@lighton-ai/sdk",
   "version": "0.0.0",
   "description": "LightOn TypeScript SDK",
   "license": "Apache-2.0",
@@ -40,6 +40,9 @@
   },
   "packageManager": "pnpm@10.18.0",
   "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "peerDependencies": {
     "zod": "^4.0.0"
   },

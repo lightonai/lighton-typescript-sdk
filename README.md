@@ -1,6 +1,6 @@
 # LightOn TypeScript SDK
 
-[![npm](https://img.shields.io/npm/v/@lighton/sdk)](https://www.npmjs.com/package/@lighton/sdk)
+[![npm](https://img.shields.io/npm/v/@lighton-ai/sdk)](https://www.npmjs.com/package/@lighton-ai/sdk)
 [![Tests](https://github.com/lightonai/lighton-typescript-sdk/actions/workflows/tests.yml/badge.svg)](https://github.com/lightonai/lighton-typescript-sdk/actions/workflows/tests.yml)
 [![Node](https://img.shields.io/badge/node-22%20%7C%2024%20%7C%2026-blue)](https://github.com/lightonai/lighton-typescript-sdk)
 [![Docs](https://img.shields.io/badge/docs-developers.lighton.ai-blue)](https://developers.lighton.ai)
@@ -45,7 +45,7 @@ This SDK wraps the LightOn API. Create an account and get an API key on
 Install:
 
 ```bash
-pnpm add @lighton/sdk
+pnpm add @lighton-ai/sdk
 ```
 
 Set your API key in your environment:
@@ -57,7 +57,7 @@ export LIGHTON_API_KEY="..."
 Get your first result:
 
 ```ts
-import { LightOn, Workspace } from "@lighton/sdk"
+import { LightOn, Workspace } from "@lighton-ai/sdk"
 
 const client = new LightOn() // reads LIGHTON_API_KEY from the environment
 
@@ -86,8 +86,8 @@ Node 22+, Bun, Deno, Cloudflare Workers, Vercel Edge and in the browser, and shi
 CommonJS:
 
 ```ts
-import { LightOn } from "@lighton/sdk"        // ESM
-const { LightOn } = require("@lighton/sdk")   // CommonJS
+import { LightOn } from "@lighton-ai/sdk"        // ESM
+const { LightOn } = require("@lighton-ai/sdk")   // CommonJS
 ```
 
 Two capabilities need a filesystem, so they are the only Node-family parts: uploading by `path`,
@@ -96,6 +96,8 @@ is actually passed, so a browser or Worker build never loads it. Everywhere else
 `Blob`:
 
 ```ts
+import { File } from "@lighton-ai/sdk"
+
 await ws.ingest(new File({ blob, filename: "report.pdf" }))
 ```
 
@@ -104,6 +106,8 @@ Unlike the Python SDK, the client holds no connection pool, so there is nothing 
 to happen at the end of a scope:
 
 ```ts
+import { LightOn } from "@lighton-ai/sdk"
+
 using client = new LightOn() // close() runs when the block exits
 ```
 
@@ -114,7 +118,7 @@ with `Workspace.ingest()`, or many at once with `ingestMany()`. Uploading *is* t
 `File` carries a processing `status` you can poll.
 
 ```ts
-import { ExecMode, File, LightOn, Workspace } from "@lighton/sdk"
+import { ExecMode, File, LightOn, Workspace } from "@lighton-ai/sdk"
 
 const client = new LightOn()
 const ws = await Workspace.get(client, 42)
@@ -130,6 +134,8 @@ await ws.ingest(new File({ path: "report.pdf" }), { wait: true })
 any upload; it resolves to a `BatchIngest` with `succeeded` and `failed`:
 
 ```ts
+import { File } from "@lighton-ai/sdk"
+
 const batch = await ws.ingestMany(
   ["contracts/*.pdf", "reports/**/*.docx", new File({ path: "extra.pdf" })],
   {
@@ -149,7 +155,7 @@ most endpoints**, so batches stay within bounds out of the box. Override it if y
 or pass `null` to disable pacing:
 
 ```ts
-import { LightOnConfiguration } from "@lighton/sdk"
+import { LightOn, Workspace } from "@lighton-ai/sdk"
 
 const client = new LightOn(undefined, { maxRequestsPerMinute: 2000 })
 await (await Workspace.get(client, 42)).ingestMany(["docs/**/*.pdf"])
@@ -158,6 +164,8 @@ await (await Workspace.get(client, 42)).ingestMany(["docs/**/*.pdf"])
 Run it in the background with `mode: ExecMode.async` and poll the job's progress:
 
 ```ts
+import { ExecMode } from "@lighton-ai/sdk"
+
 const job = await ws.ingestMany(["docs/**/*.pdf"], {
   wait: true,
   mode: ExecMode.async,
@@ -271,7 +279,7 @@ const revenue = Revenue.parse(JSON.parse(text))
 ### `search`: retrieval only, no generation
 
 ```ts
-import { RelevanceScoring, SearchMode } from "@lighton/sdk"
+import { RelevanceScoring, SearchMode } from "@lighton-ai/sdk"
 
 const response = await client.search("termination clause", {
   tags: [7],
@@ -336,7 +344,7 @@ See [Extract](#extract) for the schema rules and the async mode.
 ## Workspaces
 
 ```ts
-import { LightOn, Workspace } from "@lighton/sdk"
+import { LightOn, Workspace } from "@lighton-ai/sdk"
 
 const client = new LightOn()
 
@@ -361,6 +369,8 @@ await ws.delete()
 Some read-only extras are available **only from `list()`**:
 
 ```ts
+import { Workspace } from "@lighton-ai/sdk"
+
 for (const w of await Workspace.list(client)) {
   console.log(w.name, w.filesCount, w.userRole) // owner / editor / viewer, or null
 
@@ -387,7 +397,7 @@ Two things worth knowing:
 ## Files & ingestion
 
 ```ts
-import { File, LightOn, waitAll, Workspace } from "@lighton/sdk"
+import { File, LightOn, waitAll, Workspace } from "@lighton-ai/sdk"
 
 const f = await ws.ingest(new File({ path: "report.pdf" }))
 await f.refresh()
@@ -433,7 +443,7 @@ there is no partial success. An empty list is a local no-op.
 
 ```ts
 import { writeFile } from "node:fs/promises"
-import { DownloadPurpose, ThumbnailStatus } from "@lighton/sdk"
+import { DownloadPurpose, ThumbnailStatus } from "@lighton-ai/sdk"
 
 await writeFile("report.pdf", await doc.download())                              // as uploaded
 await writeFile("render.pdf", await doc.download(DownloadPurpose.renderedPdf))
@@ -457,7 +467,7 @@ file and reading an ingested one without reshaping anything.
 ### External metadata
 
 ```ts
-import { ExternalMetadata, File } from "@lighton/sdk"
+import { ExternalMetadata, File } from "@lighton-ai/sdk"
 
 const doc = await ws.ingest(
   new File({
@@ -528,6 +538,8 @@ treats a non-null `pendingReprocess` as not-terminal.
 Replace is addressed by **id**, never by name, because titles and filenames are not unique:
 
 ```ts
+import { File } from "@lighton-ai/sdk"
+
 const docs = await File.getByName(client, "report.pdf", 42)
 if (docs.length !== 1) throw new Error(`${docs.length} documents named report.pdf, pick one by id`)
 await docs[0].replace("report_v2.pdf", { wait: true })
@@ -539,7 +551,7 @@ Two things are asynchronous: **ingestion** (a `File`'s status, polled with `refr
 and **`parse`/`extract` in async mode**, which return a job handle.
 
 ```ts
-import { ExecMode } from "@lighton/sdk"
+import { ExecMode } from "@lighton-ai/sdk"
 
 const job = await client.extract(Letter, { file: "big-scan.pdf", mode: ExecMode.async })
 
@@ -568,6 +580,8 @@ A job handle carries:
 Parse reports failure through its own `error` block:
 
 ```ts
+import { ExecMode } from "@lighton-ai/sdk"
+
 const job = await client.parse({ file: "big.pdf", mode: ExecMode.async })
 while (!(await job.poll()).succeeded) {
   if (job.error) throw new Error(`parse job ${job.id} failed: ${job.error.message}`)
@@ -579,6 +593,8 @@ for (const page of job.result?.pages ?? []) console.log(page.markdown)
 Or skip the loop entirely:
 
 ```ts
+import { ExecMode } from "@lighton-ai/sdk"
+
 const job = await client.extract(Letter, {
   file: "big-scan.pdf",
   mode: ExecMode.async,
@@ -639,7 +655,7 @@ Whichever you pass, the schema is normalized before it is sent, because the endp
 You can run it yourself:
 
 ```ts
-import { asJsonSchema } from "@lighton/sdk"
+import { asJsonSchema } from "@lighton-ai/sdk"
 
 const schema = await asJsonSchema(Letter)
 ```
@@ -650,7 +666,7 @@ const schema = await asJsonSchema(Letter)
 ## Tags
 
 ```ts
-import { LightOn, Tag } from "@lighton/sdk"
+import { LightOn, Tag } from "@lighton-ai/sdk"
 
 const contracts = await new Tag({ name: "contracts", description: "Signed contracts" }).create(client)
 
@@ -696,7 +712,7 @@ Three concepts, one shape each:
 The whole lifecycle:
 
 ```ts
-import { AttributeType, ContentType } from "@lighton/sdk"
+import { AttributeType, ContentType } from "@lighton-ai/sdk"
 
 // 1. describe the kind of document, once, company-wide
 const nda = await ContentType.define(client, "nda", "NDA", { parent: "legal:contract" })
@@ -718,6 +734,8 @@ await client.search("termination clause", {
 ### Browsing the taxonomy
 
 ```ts
+import { ContentType } from "@lighton-ai/sdk"
+
 for (const ct of await ContentType.list(client, { includeAttributes: true })) {
   console.log(ct.path, ct.label)
   for (const attr of ct.attributes ?? []) {
@@ -751,6 +769,8 @@ await doc.unclassify("legal:contract:nda")
 Start from the catalog:
 
 ```ts
+import { ContentType } from "@lighton-ai/sdk"
+
 for (const template of await ContentType.templates(client)) {
   console.log(template.path, template.label) // legal, healthcare, finance, tech, ...
 }
@@ -763,6 +783,8 @@ subtree, where a live node carries its own flat list.
 Or define your own. Everything is idempotent, so `define()` doubles as rename:
 
 ```ts
+import { AttributeType, ContentType } from "@lighton-ai/sdk"
+
 const compliance = await ContentType.define(client, "compliance", "Compliance")
 const audit = await ContentType.define(client, "audit-report", "Audit Report", {
   parent: compliance,
@@ -783,6 +805,8 @@ rather than spending a round trip on the API's 422.
 Several actions in one request:
 
 ```ts
+import { ContentType } from "@lighton-ai/sdk"
+
 const results = await ContentType.batch(client, [
   { action: "adopt", content_types: ["legal"] },
   {
@@ -802,7 +826,7 @@ result's `data` is handed back untouched, because which shape it holds depends o
 ## API keys
 
 ```ts
-import { ApiKey, LightOn, Role } from "@lighton/sdk"
+import { ApiKey, LightOn, Role } from "@lighton-ai/sdk"
 
 const key = await new ApiKey({
   name: "ci-pipeline",
@@ -843,7 +867,7 @@ LightOnError
 ```
 
 ```ts
-import { MaintenanceError, RateLimitError, ServerError } from "@lighton/sdk"
+import { MaintenanceError, RateLimitError, ServerError } from "@lighton-ai/sdk"
 
 try {
   await client.search("q")
@@ -869,7 +893,7 @@ is worth retrying.
 logged without carrying a secret. It falls back to `LIGHTON_API_KEY` in the environment.
 
 ```ts
-import { LightOn, type LightOnConfiguration } from "@lighton/sdk"
+import { LightOn, type LightOnConfiguration } from "@lighton-ai/sdk"
 
 const client = new LightOn("sk-...", {
   baseUrl: "https://lighton.internal.acme.com",
@@ -901,6 +925,8 @@ Behavior worth knowing:
 The `fetch` option is the seam the SDK's own tests use, so they never touch the network:
 
 ```ts
+import { LightOn } from "@lighton-ai/sdk"
+
 const client = new LightOn("test-key", {
   maxRequestsPerMinute: null,
   fetch: async () => Response.json({ results: [], answer: "42" }),
@@ -913,7 +939,7 @@ LightOn drops into any agent framework as a **retrieval tool**: wrap a `client.s
 returns text. In a long-running agent, create the client once for the process lifetime.
 
 ```ts
-import { LightOn } from "@lighton/sdk"
+import { LightOn } from "@lighton-ai/sdk"
 
 const client = new LightOn()
 

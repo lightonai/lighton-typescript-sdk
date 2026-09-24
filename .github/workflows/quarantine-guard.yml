@@ -1,0 +1,28 @@
+name: quarantine-guard
+
+# Fail the PR if it touches the supply-chain quarantine (pnpm's minimumReleaseAge).
+# Make this a required check in branch protection so the failure blocks merge.
+#
+# The pattern also matches minimumReleaseAgeExclude, and the .npmrc spelling
+# (minimum-release-age), because either one is a way around the quarantine without
+# touching the headline setting.
+on:
+  pull_request:
+    paths: ["pnpm-workspace.yaml", ".npmrc"]
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # need base history to diff
+      - name: Reject edits to the quarantine
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          if git diff "$base" HEAD -- pnpm-workspace.yaml .npmrc \
+             | grep -qiE '^[+-].*minimum-?release-?age'; then
+            echo "::error file=pnpm-workspace.yaml::Supply-chain quarantine (minimumReleaseAge) was modified, security review required."
+            exit 1
+          fi
+          echo "Quarantine intact."
