@@ -1,8 +1,8 @@
-export { ActiveRecord } from "./activeRecord.ts"
+export { ActiveRecord, type ReadOptions } from "./activeRecord.ts"
 export type { ApiKeyListOptions } from "./apikey.ts"
 export { ApiKey, type ApiKeyInit, type ApiKeyScope } from "./apikey.ts"
 export { BatchIngestJob, type BatchOptions } from "./batch.ts"
-export { LightOn } from "./client.ts"
+export { LightOn, type RequestOptions } from "./client.ts"
 export {
   type Attribute,
   type BatchActionResult,
@@ -36,8 +36,10 @@ export {
   NotFoundError,
   PermissionDeniedError,
   RateLimitError,
+  ResponseTooLargeError,
   ServerError,
   StreamError,
+  UnsafeUrlError,
 } from "./errors.ts"
 export {
   type CreateOptions,
@@ -45,6 +47,7 @@ export {
   File as LightOnFile,
   type FileInit,
   type FileListOptions,
+  type GetOptions,
   type SaveOptions,
   type WaitOptions,
   waitAll,

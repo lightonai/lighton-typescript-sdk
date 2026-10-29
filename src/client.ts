@@ -9,8 +9,11 @@
 import {
   fromResponse,
   LightOnConnectionError,
+  LightOnError,
   MalformedResponseError,
   RateLimitError,
+  ResponseTooLargeError,
+  UnsafeUrlError,
 } from "./errors.ts"
 import type { ExtractJob, ParseJob } from "./job.ts"
 import type { SchemaInput } from "./schema.ts"
@@ -51,6 +54,12 @@ export interface RequestOptions {
   raw?: boolean
   /** Caller cancellation, merged with the client's timeout and lifetime. */
   signal?: AbortSignal
+  /** `Accept` header. Defaults to `application/json`, or `*\/*` when `raw`. */
+  accept?: string
+  /** Largest 2xx body to hold, in bytes. Overrides the client's `maxResponseBytes`. */
+  maxResponseBytes?: number | null
+  /** Whether to camelCase the response keys. Overrides the client's `transformKeys`. */
+  transformKeys?: boolean
 }
 
 /**
@@ -166,6 +175,9 @@ export class LightOn implements Transport {
   readonly #timeout: number
   readonly #retries: number
   readonly #rateLimitRetries: number
+  readonly #maxResponseBytes: number | null
+  readonly #redirect: RequestRedirect
+  readonly #transformKeys: boolean
   readonly #gate: RateGate | null
   readonly #lifetime = new AbortController()
 
@@ -185,6 +197,9 @@ export class LightOn implements Transport {
     this.#timeout = config.timeout ?? 120_000
     this.#retries = config.retries ?? 3
     this.#rateLimitRetries = config.rateLimitRetries ?? 3
+    this.#maxResponseBytes = config.maxResponseBytes ?? null
+    this.#redirect = config.redirect ?? "error"
+    this.#transformKeys = config.transformKeys ?? true
     const perMinute =
       config.maxRequestsPerMinute === undefined ? 1000 : config.maxRequestsPerMinute
     this.#gate = perMinute ? new RateGate(perMinute) : null
@@ -260,6 +275,8 @@ export class LightOn implements Transport {
    * @throws LightOnAPIError - Mapped from a non-2xx status.
    * @throws LightOnConnectionError - On transport failure.
    * @throws MalformedResponseError - On a 2xx body that is not JSON.
+   * @throws ResponseTooLargeError - On a 2xx body over `maxResponseBytes`.
+   * @throws UnsafeUrlError - On an absolute `path` outside `baseUrl`'s origin.
    * @internal
    */
   async request<T>(
@@ -270,7 +287,7 @@ export class LightOn implements Transport {
     for (let attempt = 0; ; attempt++) {
       await this.#gate?.acquire()
       const response = await this.#send(method, path, options)
-      if (response.ok) return (await this.#parse(response, options.raw)) as T
+      if (response.ok) return (await this.#parse(response, options)) as T
 
       const error = await fromResponse(response)
       if (error instanceof RateLimitError && attempt < this.#rateLimitRetries) {
@@ -304,9 +321,10 @@ export class LightOn implements Transport {
     path: string,
     options: RequestOptions = {},
   ): AsyncGenerator<string, void, undefined> {
+    const streaming = { accept: "text/event-stream", ...options }
     for (let attempt = 0; ; attempt++) {
       await this.#gate?.acquire()
-      const response = await this.#send(method, path, options)
+      const response = await this.#send(method, path, streaming)
       if (response.ok) {
         yield* readLines(response)
         return
@@ -329,13 +347,19 @@ export class LightOn implements Transport {
   ): Promise<Response> {
     // An absolute path is a pagination `next` link, which already carries its query.
     // httpx passes those through untouched and so must this, or the base would be
-    // prepended to a complete URL.
-    const base = /^https?:\/\//.test(path) ? path : `${this.#baseUrl}${path}`
+    // prepended to a complete URL. Checked, not trusted: it carries the API key.
+    const base = /^https?:\/\//.test(path)
+      ? this.#sameOrigin(path)
+      : `${this.#baseUrl}${path}`
     const url = `${base}${options.params ? buildQuery(options.params) : ""}`
-    const headers: Record<string, string> = { Authorization: `Bearer ${this.#apiKey}` }
+    // Lowercase, as `Headers` normalizes them, so an injected `fetch` can read them.
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${this.#apiKey}`,
+      accept: options.accept ?? (options.raw ? "*/*" : "application/json"),
+    }
     let body = options.body
     if (options.json !== undefined) {
-      headers["Content-Type"] = "application/json"
+      headers["content-type"] = "application/json"
       body = JSON.stringify(options.json)
     }
     // close() can land while an earlier await was pending. Say so here rather than
@@ -343,6 +367,7 @@ export class LightOn implements Transport {
     if (this.#lifetime.signal.aborted) {
       throw new LightOnConnectionError("client is closed")
     }
+    options.signal?.throwIfAborted()
 
     for (let attempt = 0; ; attempt++) {
       const signals = [AbortSignal.timeout(this.#timeout), this.#lifetime.signal]
@@ -352,11 +377,14 @@ export class LightOn implements Transport {
           method,
           headers,
           body: body ?? null,
+          redirect: this.#redirect,
           signal: AbortSignal.any(signals),
         })
       } catch (error) {
         // The caller cancelled: their abort, their error, not a transport failure.
         if (options.signal?.aborted) throw error
+        // Already one of ours (a proxy, a test seam): wrapping would hide the status.
+        if (error instanceof LightOnError) throw error
         // A closed client is terminal, retrying it would just fail `retries` more times.
         if (this.#lifetime.signal.aborted) {
           throw new LightOnConnectionError("client is closed", { cause: error })
@@ -369,12 +397,38 @@ export class LightOn implements Transport {
     }
   }
 
-  async #parse(response: Response, raw?: boolean): Promise<unknown> {
-    if (raw) return new Uint8Array(await response.arrayBuffer())
-    const text = await response.text()
-    if (!text) return null
+  /** Refuse an absolute URL that would carry the API key off `baseUrl`'s origin. */
+  #sameOrigin(absolute: string): string {
+    let url: URL
     try {
-      return camelize(JSON.parse(text))
+      url = new URL(absolute)
+    } catch {
+      throw new UnsafeUrlError("refusing to request a malformed URL")
+    }
+    if (url.username || url.password) {
+      throw new UnsafeUrlError("refusing to request a URL that carries credentials")
+    }
+    if (url.origin !== new URL(`${this.#baseUrl}/`).origin) {
+      throw new UnsafeUrlError(
+        `refusing to send the API key to ${url.origin}, outside ${this.#baseUrl}`,
+      )
+    }
+    return absolute
+  }
+
+  async #parse(response: Response, options: RequestOptions): Promise<unknown> {
+    // `null` per request lifts the client's bound, so not `??`.
+    const limit =
+      options.maxResponseBytes === undefined
+        ? this.#maxResponseBytes
+        : options.maxResponseBytes
+    const bytes = await readBounded(response, limit)
+    if (options.raw) return bytes
+    if (bytes.byteLength === 0) return null
+    const text = new TextDecoder().decode(bytes)
+    try {
+      const parsed = JSON.parse(text)
+      return (options.transformKeys ?? this.#transformKeys) ? camelize(parsed) : parsed
     } catch (error) {
       throw new MalformedResponseError(
         `expected JSON but got: ${JSON.stringify(text.slice(0, 200))}`,
@@ -386,6 +440,42 @@ export class LightOn implements Transport {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** Read a body whole, cancelling it as soon as it is known to exceed `limit`. */
+async function readBounded(
+  response: Response,
+  limit: number | null,
+): Promise<Uint8Array> {
+  if (limit === null) return new Uint8Array(await response.arrayBuffer())
+  const tooLarge = () =>
+    new ResponseTooLargeError(`response exceeds ${limit} bytes`, { limit })
+  const declared = Number(response.headers.get("content-length"))
+  if (Number.isFinite(declared) && declared > limit) {
+    await response.body?.cancel().catch(() => {})
+    throw tooLarge()
+  }
+  if (!response.body) return new Uint8Array(0)
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > limit) {
+      await reader.cancel().catch(() => {})
+      throw tooLarge()
+    }
+    chunks.push(value)
+  }
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    out.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return out
 }
 
 /**

@@ -6,7 +6,13 @@
  * `refresh()` purely because `absorb` overwrites only the keys a response carried.
  */
 
-import { ActiveRecord, getOne, listAll } from "./activeRecord.ts"
+import {
+  ActiveRecord,
+  getOne,
+  listAll,
+  pick,
+  type ReadOptions,
+} from "./activeRecord.ts"
 import type { Query, Transport } from "./client.ts"
 import type { Role } from "./enums.ts"
 import type { ApiKeyFilters } from "./types/index.ts"
@@ -28,6 +34,8 @@ export interface ApiKeyInit {
 }
 
 export interface ApiKeyListOptions {
+  /** Caller cancellation, applied to every page. */
+  signal?: AbortSignal
   /** Endpoint filters under their API names, e.g. `is_expired`. */
   filters?: ApiKeyFilters
 }
@@ -87,7 +95,7 @@ export class ApiKey extends ActiveRecord {
    * @returns Every matching API key, bound to `client`.
    */
   static list(client: Transport, options: ApiKeyListOptions = {}): Promise<ApiKey[]> {
-    return listAll(ApiKey, client, options.filters as Query | undefined)
+    return listAll(ApiKey, client, options.filters as Query | undefined, pick(options))
   }
 
   /**
@@ -95,10 +103,15 @@ export class ApiKey extends ActiveRecord {
    *
    * @param client - The client to request with and bind to the result.
    * @param id - The key id to retrieve.
+   * @param options - Cancellation. See {@link ReadOptions}.
    * @returns The key, bound to `client`.
    */
-  static get(client: Transport, id: string): Promise<ApiKey> {
-    return getOne(ApiKey, client, id)
+  static get(
+    client: Transport,
+    id: string,
+    options: ReadOptions = {},
+  ): Promise<ApiKey> {
+    return getOne(ApiKey, client, id, options)
   }
 
   /** Scopes on the wire. Empty means unscoped, which the API spells `null`, not `[]`. */

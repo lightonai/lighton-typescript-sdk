@@ -6,7 +6,7 @@
  * runtime. Tags scope `ask` and `search` through their `tags` option.
  */
 
-import { ActiveRecord, listAll } from "./activeRecord.ts"
+import { ActiveRecord, listAll, pick } from "./activeRecord.ts"
 import type { Query, Transport } from "./client.ts"
 import type { TagFilters } from "./types/index.ts"
 import { paginate } from "./utils.ts"
@@ -22,6 +22,8 @@ export interface TagInit {
 }
 
 export interface TagListOptions {
+  /** Caller cancellation, applied to every page. */
+  signal?: AbortSignal
   /** Endpoint filters under their API names, e.g. `name`, `auto_assign`. */
   filters?: TagFilters
 }
@@ -79,7 +81,7 @@ export class Tag extends ActiveRecord {
    * @returns Every matching tag, bound to `client`.
    */
   static list(client: Transport, options: TagListOptions = {}): Promise<Tag[]> {
-    return listAll(Tag, client, options.filters as Query | undefined)
+    return listAll(Tag, client, options.filters as Query | undefined, pick(options))
   }
 
   /**

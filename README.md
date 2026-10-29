@@ -83,7 +83,8 @@ console.log(answer.answer)
 
 The SDK is built on global `fetch` and Web Streams, with **no runtime dependencies**. It runs on
 Node 22+, Bun, Deno, Cloudflare Workers, Vercel Edge and in the browser, and ships both ESM and
-CommonJS:
+CommonJS. Node 22, 24 and 26 are tested in CI on every change (`engines.node` is `>=22`); the
+others are supported on a best-effort basis, since they share the same `fetch` and stream APIs.
 
 ```ts
 import { LightOn } from "@lighton-ai/sdk"        // ESM
@@ -888,6 +889,8 @@ Everything the SDK throws derives from `LightOnError`:
 LightOnError
 ├── LightOnConnectionError    transport failure before any response
 ├── MalformedResponseError    a 2xx body that was not JSON
+├── ResponseTooLargeError     a 2xx body over maxResponseBytes; carries limit
+├── UnsafeUrlError            a URL outside baseUrl's origin, or carrying credentials
 ├── StreamError               an error event partway through a stream
 └── LightOnAPIError           non-2xx; carries statusCode and body
     ├── AuthenticationError   401, bad or missing API key
@@ -943,6 +946,9 @@ const client = new LightOn("sk-...", {
 | `retries` | `3` | **connection-level** retries with backoff, not HTTP errors |
 | `maxRequestsPerMinute` | `1000` | paces every request; `null` disables pacing |
 | `rateLimitRetries` | `3` | retries on HTTP 429, honoring `Retry-After` |
+| `maxResponseBytes` | `null` | largest 2xx body held in memory; over it, `ResponseTooLargeError` |
+| `redirect` | `"error"` | how `fetch` treats a 3xx; the API key never follows a redirect |
+| `transformKeys` | `true` | camelCase response keys; `false` keeps the wire's snake_case |
 | `fetch` | the global one | a custom `fetch`, for a proxy or for tests |
 
 Behavior worth knowing:
@@ -951,8 +957,39 @@ Behavior worth knowing:
 - On 429 the SDK waits the `Retry-After` header when the server sends one, else an exponential
   backoff with jitter, and retries.
 - **5xx is never retried.** A maintenance window outlasts any cooldown worth waiting.
-- A caller's `AbortSignal` is passed through on every verb, and is rethrown untouched rather than
-  wrapped, so your cancellation stays yours.
+- A caller's `AbortSignal` is passed through on every verb and on every resource read (`list`,
+  `get`, `refresh`, `delete`, `pages`, `downloadThumbnail`), and is rethrown untouched rather
+  than wrapped, so your cancellation stays yours.
+- **The API key never leaves `baseUrl`'s origin.** A pagination `next` link, or an absolute URL
+  passed to `request()`, is refused with `UnsafeUrlError` when it points at another origin or
+  embeds credentials, before anything is sent. `list()` also refuses a `next` link it has already
+  followed and stops after `maxPages` (default 10 000), so a looping server fails loudly.
+- Every request sends `Accept: application/json`, or `*/*` for a `raw` request; set `accept` on
+  `request()` to name the media type you expect from a binary endpoint.
+
+`request()` is the one chokepoint under every verb and resource, and is public for endpoints the
+SDK has no verb for. Its per-request options mirror the client knobs where that makes sense:
+
+```ts
+import { LightOn } from "@lighton-ai/sdk"
+
+const client = new LightOn("sk-...", { maxResponseBytes: 16 * 1024 * 1024 })
+
+// Bounded, snake_case, cancellable.
+const page = await client.request("GET", "/api/v3/workspaces", {
+  params: { page_size: 100 },
+  transformKeys: false,
+  maxResponseBytes: 1024 * 1024,
+  signal: AbortSignal.timeout(10_000),
+})
+
+// Binary, with the media type expected.
+const pdf = await client.request<Uint8Array>("GET", "/api/v3/files/9/download", {
+  params: { purpose: "rendered_pdf" },
+  raw: true,
+  accept: "application/pdf",
+})
+```
 
 The `fetch` option is the seam the SDK's own tests use, so they never touch the network:
 

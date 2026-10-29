@@ -29,7 +29,7 @@ src/
     api.ts          GENERATED from the OpenAPI schema, never edited by hand
     index.ts        curated camelCase aliases over api.ts
     config.ts events.ts file.ts workspace.ts batch.ts
-tests/              one module per source module, plus e2e/cli.ts
+tests/              one module per source module, plus transport.test.ts (what request() refuses) and e2e/cli.ts
 scripts/            check-readme.mjs, behind `make check-docs`
 .github/workflows/  lint, tests (Node 22/24/26), release, quarantine-guard
 ```
@@ -50,10 +50,34 @@ the top level. A pure-data shape may reference a behavioral one as a field type,
 - **`request()` camelizes every response.** This is the only place it happens, so nothing downstream
   has to think about wire naming. SSE payloads do not pass through it, so `askStream` camelizes them
   explicitly; without that, streaming and non-streaming `ask` would hand back differently-named
-  fields.
-- **An absolute path is passed through untouched.** A pagination `next` link is a complete URL
-  carrying its own query string, and prepending the base to it would silently truncate every
-  `list()`.
+  fields. `transformKeys: false` (client-wide or per call) switches it off for callers validating
+  responses against their own snake_case schemas; the typed verbs and resources assume the default.
+- **An absolute path is passed through untouched, but never trusted.** A pagination `next` link is
+  a complete URL carrying its own query string, and prepending the base to it would silently
+  truncate every `list()`. The bearer token goes on every request, though, so `#send` refuses an
+  absolute URL whose origin differs from `baseUrl` or that embeds credentials (`UnsafeUrlError`),
+  before `fetch` sees it. `paginate()` adds the loop-side guards: a repeated `next` and a page
+  ceiling (`maxPages`, default 10 000) both throw rather than run forever.
+- **Responses are bounded on request.** `maxResponseBytes` (client-wide, overridable per call,
+  `null` meaning no bound, which is the default) is enforced in `#parse` by `readBounded()`: a
+  declared `Content-Length` over the limit fails before the body is read, a chunked body is counted
+  as it streams and cancelled on overflow. `ResponseTooLargeError` carries the limit. `stream()` is
+  exempt, since the caller consumes it line by line and owns its lifetime.
+- **`redirect` defaults to `"error"`.** A 3xx on an authenticated request could carry the key to
+  another host; a caller behind a proxy they control sets `"follow"` explicitly.
+- **Every request carries `Accept`**: `application/json`, or `*/*` when `raw`, and `text/event-stream`
+  from `stream()`, overridable per call so a binary endpoint can name the media type it expects.
+- **A caller's aborted signal fails before `fetch`**, the same way a closed client does, so a `list()`
+  cancelled between two pages never builds the next request.
+- **Header keys are lowercase** (`authorization`, `content-type`, `accept`), the way `Headers`
+  normalizes them, so an injected `fetch` reads `init.headers.authorization` without wrapping it.
+- **An SDK error thrown by the injected `fetch` is rethrown unchanged.** A proxy or a test seam may
+  already map a status to a `LightOnAPIError`; wrapping it in a `LightOnConnectionError` would hide
+  the status behind `cause`. Any other `fetch` failure is still a connection error.
+- **Every resource read takes a `signal`.** `list()` carries it on its options object and applies
+  it to every page; `get()`, `refresh()`, `delete()`, `pages()` and `downloadThumbnail()` take a
+  trailing `ReadOptions`. `exactOptionalPropertyTypes` forbids copying an absent signal as
+  `undefined`, which is what the `pick()` helper in `activeRecord.ts` is for.
 - **5xx is never retried.** 429 is, honoring `Retry-After` when present, else exponential backoff
   with jitter. Connection failures are retried separately, and neither an `AbortError` nor a
   `TimeoutError` counts as one: retrying a timeout would multiply the caller's deadline by `retries`.

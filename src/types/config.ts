@@ -42,4 +42,19 @@ export interface LightOnConfiguration {
    * (else exponential backoff). 0 disables.
    */
   rateLimitRetries?: number
+
+  /**
+   * Largest 2xx body `request()` will hold, in bytes; over it, `ResponseTooLargeError`.
+   * Default `null`, no bound. Overridable per request. `stream()` is never bounded.
+   */
+  maxResponseBytes?: number | null
+
+  /** How `fetch` treats a 3xx. Default `"error"`, so the API key never follows one. */
+  redirect?: RequestRedirect
+
+  /**
+   * Whether response keys are rewritten to camelCase. Default `true`. With `false` the
+   * typed verbs and resources no longer apply; use `request()`. Overridable per request.
+   */
+  transformKeys?: boolean
 }

@@ -5,7 +5,13 @@
  * client to the instance, and later `save()`/`refresh()`/`delete()` reuse it.
  */
 
-import { ActiveRecord, getOne, listAll } from "./activeRecord.ts"
+import {
+  ActiveRecord,
+  getOne,
+  listAll,
+  pick,
+  type ReadOptions,
+} from "./activeRecord.ts"
 import { type BatchIngestJob, type BatchOptions, runBatch } from "./batch.ts"
 import type { Query, Transport } from "./client.ts"
 import { ExecMode, type Role } from "./enums.ts"
@@ -29,6 +35,8 @@ export interface IngestOptions extends WaitOptions {
 }
 
 export interface WorkspaceListOptions {
+  /** Caller cancellation, applied to every page. */
+  signal?: AbortSignal
   /** Endpoint filters under their API names, e.g. `name`, `user_role`, `ordering`. */
   filters?: WorkspaceFilters
 }
@@ -98,7 +106,12 @@ export class Workspace extends ActiveRecord {
     client: Transport,
     options: WorkspaceListOptions = {},
   ): Promise<Workspace[]> {
-    return listAll(Workspace, client, options.filters as Query | undefined)
+    return listAll(
+      Workspace,
+      client,
+      options.filters as Query | undefined,
+      pick(options),
+    )
   }
 
   /**
@@ -106,10 +119,15 @@ export class Workspace extends ActiveRecord {
    *
    * @param client - The client to request with and bind to the result.
    * @param id - The workspace id to retrieve.
+   * @param options - Cancellation. See {@link ReadOptions}.
    * @returns The workspace, bound to `client`.
    */
-  static get(client: Transport, id: number | string): Promise<Workspace> {
-    return getOne(Workspace, client, id)
+  static get(
+    client: Transport,
+    id: number | string,
+    options: ReadOptions = {},
+  ): Promise<Workspace> {
+    return getOne(Workspace, client, id, options)
   }
 
   /**

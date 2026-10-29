@@ -15,6 +15,22 @@ export class MalformedResponseError extends LightOnError {
   override name = "MalformedResponseError"
 }
 
+/** A 2xx body exceeded `maxResponseBytes`; `limit` is the bound that was in force. */
+export class ResponseTooLargeError extends LightOnError {
+  override name = "ResponseTooLargeError"
+  readonly limit: number
+
+  constructor(message: string, options: { limit: number }) {
+    super(message)
+    this.limit = options.limit
+  }
+}
+
+/** An absolute URL outside `baseUrl`'s origin, or one carrying credentials. */
+export class UnsafeUrlError extends LightOnError {
+  override name = "UnsafeUrlError"
+}
+
 /**
  * The server sent an `error` event partway through a stream.
  *
