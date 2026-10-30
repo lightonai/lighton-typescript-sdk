@@ -12,7 +12,11 @@ import { ExecMode, type Role } from "./enums.ts"
 import type { File, WaitOptions } from "./file.ts"
 import type { BatchIngest } from "./types/batch.ts"
 import type { WorkspaceFilters } from "./types/index.ts"
-import type { WorkspaceSync, WorkspaceTaxonomy } from "./types/workspace.ts"
+import type {
+  WorkspacePermissions,
+  WorkspaceSync,
+  WorkspaceTaxonomy,
+} from "./types/workspace.ts"
 
 const BASE = "/api/v3/workspaces"
 
@@ -50,6 +54,13 @@ export class Workspace extends ActiveRecord {
   /** Your role on this workspace (read-only). Null when you hold none. */
   userRole?: Role | null
   /**
+   * What you may do on this workspace, a scoped API key's limits included (read-only).
+   *
+   * Only `get()` and `refresh()` return it, the mirror of `taxonomy`: `list()` leaves it
+   * unset. Check it before an upload instead of catching a 403.
+   */
+  userPermissions?: WorkspacePermissions | null
+  /**
    * Classification coverage and per-root document counts (read-only).
    *
    * Only `list()` returns it. The detail endpoint omits the key entirely, so `get()` and
@@ -76,6 +87,7 @@ export class Workspace extends ActiveRecord {
     "createdAt",
     "updatedAt",
     "userRole",
+    "userPermissions",
     "taxonomy",
     "sync",
   ]

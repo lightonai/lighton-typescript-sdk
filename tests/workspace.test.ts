@@ -141,3 +141,53 @@ test("ingest uploads into this workspace", async () => {
   expect(file.id).toBe(7)
   expect(file.status).toBe("pending")
 })
+
+test("sync parses the SMB walk and rejected credentials", async () => {
+  const sync = {
+    datasource_type: "smb",
+    last_status: "success", // every batch reports success mid-walk
+    credentials_rejected: true,
+    auth_protocol: "kerberos",
+    walk: {
+      complete: false,
+      started_at: "2026-10-01T08:00:00Z",
+      pending_directories: 12,
+      files_seen: 340,
+      bytes_read: 1024,
+      refused_directories_count: 1,
+      refused_directories: ["finance/locked"],
+      failed_files: 0,
+      refusals_incomplete: false,
+    },
+  }
+  const client = makeClient(() => json({ results: [{ id: 7, name: "Docs", sync }] }))
+  const [ws] = await Workspace.list(client)
+
+  expect(ws?.sync?.credentialsRejected).toBe(true)
+  expect(ws?.sync?.authProtocol).toBe("kerberos")
+  expect(ws?.sync?.walk?.complete).toBe(false) // what lastStatus can't tell you
+  expect(ws?.sync?.walk?.refusedDirectories).toEqual(["finance/locked"])
+})
+
+test("user permissions come from the detail endpoint only", async () => {
+  const perms = {
+    can_upload_files: true,
+    can_delete_files: true,
+    can_edit_workspace: false,
+    can_edit_datasource: false,
+    can_operate_datasource: false,
+    can_delete_workspace: false,
+    can_manage_members: false,
+  }
+  const client = makeClient((request) =>
+    request.url.endsWith("/7")
+      ? json({ id: 7, name: "Docs", user_permissions: perms })
+      : json({ results: [{ id: 7, name: "Docs" }], next: null }),
+  )
+  const [ws] = await Workspace.list(client)
+  expect(ws?.userPermissions).toBeUndefined() // list() doesn't carry it
+
+  await ws?.refresh()
+  expect(ws?.userPermissions?.canUploadFiles).toBe(true)
+  expect(ws?.userPermissions?.canDeleteWorkspace).toBe(false)
+})
