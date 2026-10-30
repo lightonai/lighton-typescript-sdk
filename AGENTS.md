@@ -34,6 +34,11 @@ scripts/            check-readme.mjs, behind `make check-docs`
 .github/workflows/  lint, tests (Node 22/24/26), release, quarantine-guard
 ```
 
+`WorkspaceSync` mirrors the whole sync block, SMB connection settings included, plus `walk`
+(`SyncWalk`): an SMB walk reports `success` after every batch, so only `walk.complete` tells a
+days-long first scan from a finished one. `walk.failedFiles` counts files only;
+`failedFilesCount` also counts refused directories.
+
 `types/` holds pure data shapes only. Anything with behavior (`Workspace`, `BatchIngestJob`) lives at
 the top level. A pure-data shape may reference a behavioral one as a field type, as
 `types/batch.ts` does with `File`; it stays pure data itself.
@@ -103,9 +108,10 @@ Adding a fourth opaque key means adding a test that fails without it.
 
 - **Active-record over resource-manager**, matching the Python SDK: `File.list(client)`,
   `file.refresh()`, `file.save()`.
-- **`absorb()` overwrites only keys the response actually carried.** Load-bearing three times over:
-  `Workspace.taxonomy` (only `list()` returns it), `ApiKey.key` (only `create()` returns it) and
-  `File.path`/`File.blob` (local only, in no response). A plain `Object.assign` breaks all three
+- **`absorb()` overwrites only keys the response actually carried.** Load-bearing four times over:
+  `Workspace.taxonomy` (only `list()` returns it), `Workspace.userPermissions` (only the detail
+  endpoint does), `ApiKey.key` (only `create()` returns it) and
+  `File.path`/`File.blob` (local only, in no response). A plain `Object.assign` breaks all four
   silently. TypeScript has no runtime view of an interface, so each resource declares a static
   `fields` array; that list is also what stops a response writing arbitrary keys onto a resource.
 - **`list()` and `get()` are per-resource statics over the free `listAll()`/`getOne()` helpers**, not

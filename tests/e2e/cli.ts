@@ -168,6 +168,7 @@ step("workspace", "create, list, get, save, refresh", async (c) => {
   await ws.save()
   await ws.refresh()
   assert.equal(ws.description, "renamed by e2e", "save() did not persist")
+  assert.ok(ws.userPermissions?.canUploadFiles, "owner should be able to upload")
   say("list / get / save / refresh ok")
 })
 
