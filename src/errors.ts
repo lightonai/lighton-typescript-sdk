@@ -33,7 +33,30 @@ export class StreamError extends LightOnError {
   }
 }
 
-/** The API returned a non-2xx response. */
+/** One cause of a field-level validation failure, in the API's own shape. */
+export interface FieldError {
+  /** Machine-readable code, e.g. `invalid` or `required`. */
+  error?: string
+  /** Human-readable cause, e.g. `must be a non-empty list`. */
+  detail?: string
+  /** Anything else the API sent alongside, passed through untouched. */
+  [key: string]: unknown
+}
+
+/**
+ * The API returned a non-2xx response.
+ *
+ * `statusCode` is the HTTP status, and `body` is the decoded error payload exactly as the
+ * API sent it (the parsed JSON, the raw text when it was not JSON, or null when there was
+ * no body). Nothing is stripped from it, so anything this class does not name is still
+ * readable there.
+ *
+ * `fields` holds the per-field validation errors of a 422, keyed by the API's field name:
+ * `{ choices: [{ error: "invalid", detail: "must be a non-empty list" }] }`. The top-level
+ * `detail` of a validation error is a constant sentence, so this is the part that says what
+ * actually went wrong. It is already folded into the message; the property is for callers
+ * that want to branch on it. Empty for every error that is not a field-level rejection.
+ */
 export class LightOnAPIError extends LightOnError {
   override name = "LightOnAPIError"
   readonly statusCode: number
@@ -48,6 +71,7 @@ export class LightOnAPIError extends LightOnError {
    * action is idempotent: correct that one and resend the whole list.
    */
   readonly index: number | null
+  readonly fields: Readonly<Record<string, readonly FieldError[]>>
 
   constructor(
     message: string,
@@ -57,6 +81,7 @@ export class LightOnAPIError extends LightOnError {
     this.statusCode = options.statusCode
     this.body = options.body ?? null
     this.index = batchIndex(this.body)
+    this.fields = fieldErrors(this.body)
   }
 }
 
@@ -171,10 +196,12 @@ export async function fromResponse(response: Response): Promise<LightOnAPIError>
   const status = response.statusText
     ? `${statusCode} ${response.statusText}`
     : String(statusCode)
+  let message = detail ? `${status}: ${String(detail)}` : status
+  // What went wrong, then which action it went wrong on.
+  const summary = fieldSummary(fieldErrors(body))
+  if (summary) message = `${message} (${summary})`
   const index = batchIndex(body)
-  const message =
-    (detail ? `${status}: ${String(detail)}` : status) +
-    (index === null ? "" : ` (action ${index})`)
+  if (index !== null) message = `${message} (action ${index})`
 
   if (statusCode === 429) {
     return new RateLimitError(message, {
@@ -216,6 +243,46 @@ function retryAfterSeconds(response: Response): number | null {
 function batchIndex(body: unknown): number | null {
   const value = isRecord(body) ? body.index : undefined
   return Number.isInteger(value) ? (value as number) : null
+}
+
+/**
+ * Per-field validation errors keyed by field name, or `{}` when there are none.
+ *
+ * Defensive at every level because this runs while an error is being built: a server
+ * shape change has to degrade to an empty map, never throw on top of the error it was
+ * meant to describe. A key whose list yields no entries is dropped, so a non-empty result
+ * always has something to say.
+ */
+function fieldErrors(body: unknown): Record<string, FieldError[]> {
+  const raw = isRecord(body) ? body.fields : undefined
+  if (!isRecord(raw)) return {}
+  // fromEntries, not assignment: a `__proto__` key from the wire stays a plain key.
+  return Object.fromEntries(
+    Object.entries(raw)
+      .map(
+        ([name, errors]) =>
+          [name, Array.isArray(errors) ? errors.filter(isRecord) : []] as const,
+      )
+      .filter(([, entries]) => entries.length),
+  )
+}
+
+/**
+ * Render `fields` for the message: `name: why, why; name: why`. Falls back to the `error`
+ * code when an entry has no readable `detail`, so a named field always has a cause.
+ *
+ * ponytail: uncapped, since `fields` is keyed by request-body field and so bounded by the
+ * request schema; cap it here if an endpoint ever reports per-item errors.
+ */
+function fieldSummary(fields: Record<string, FieldError[]>): string {
+  const parts: string[] = []
+  for (const [name, errors] of Object.entries(fields)) {
+    const causes = errors
+      .map((e) => [e.detail, e.error].find((v) => typeof v === "string" && v))
+      .filter(Boolean)
+    if (causes.length) parts.push(`${name}: ${causes.join(", ")}`)
+  }
+  return parts.join("; ")
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

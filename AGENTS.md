@@ -54,6 +54,13 @@ the top level. A pure-data shape may reference a behavioral one as a field type,
 - **An absolute path is passed through untouched.** A pagination `next` link is a complete URL
   carrying its own query string, and prepending the base to it would silently truncate every
   `list()`.
+- **`LightOnAPIError.fields` is the 422 envelope's per-field errors**, `{ field: [{ error, detail }] }`,
+  `{}` otherwise, and is also folded into the message as `(choices: why; title: why)`. The
+  top-level `detail` of a validation error is a constant sentence, so without it every 422 reads
+  the same and a log of them names nothing. Parsed in the base constructor so every subclass gets
+  it, passed through in the wire shape (keys are the API's field names, never camelized), and
+  defensive at every level: it runs while an error is being built, so a shape change degrades to
+  `{}` rather than throwing over the error it describes.
 - **5xx is never retried.** 429 is, honoring `Retry-After` when present, else exponential backoff
   with jitter. Connection failures are retried separately, and neither an `AbortError` nor a
   `TimeoutError` counts as one: retrying a timeout would multiply the caller's deadline by `retries`.
