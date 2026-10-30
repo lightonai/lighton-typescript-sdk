@@ -15,14 +15,19 @@
  * plain data shape. The name is an interface and a value at once, so `ContentType` reads
  * as both the type of a node and the namespace the operations hang off.
  *
- * `FacetAction`/`FacetResult` are the write and result shapes of `file.batchFacets()`.
+ * `ContentTypeAction`/`ContentTypeResult` and `FacetAction`/`FacetResult` are the write
+ * and result shapes of the two batch endpoints, `ContentType.batch()` and
+ * `file.batchFacets()`.
  */
 
 import type { Query, Transport } from "./client.ts"
-import { AttributeType, FacetActionType } from "./enums.ts"
+import { AttributeType, ContentTypeActionType, FacetActionType } from "./enums.ts"
 import { compact, type PathRef, path as toPath } from "./utils.ts"
 
 const BASE = "/api/v3/content-types"
+
+/** Actions per `ContentType.batch()` call, the API's cap. Split a longer job yourself. */
+export const MAX_CONTENT_TYPE_ACTIONS = 50
 
 /** Actions per `file.batchFacets()` call, the API's cap. Split a longer job yourself. */
 export const MAX_FACET_ACTIONS = 50
@@ -215,19 +220,32 @@ export interface FacetResult {
   data: Record<string, unknown> | null
 }
 
-/** One result of a {@link ContentType.batch} call. */
-export interface BatchActionResult {
-  /** HTTP status this action would have returned on its own. */
+/**
+ * What one action in a {@link ContentType.batch} call returned.
+ *
+ * Every result you receive succeeded: the endpoint fails fast, so a failing action
+ * throws (see `LightOnAPIError.index`) and no results come back at all. A returned list is
+ * therefore always complete and in order, so `results[i]` is the outcome of `actions[i]`.
+ */
+export interface ContentTypeResult {
+  /**
+   * Per-action status: 201 created, 200 already applied or updated, 204 for the removals
+   * (`undefine`, `undefineAttribute`).
+   */
   status: number
   /**
-   * The node or attribute the action produced.
+   * What the action returned, null for the 204 verbs: a node for the content-type verbs,
+   * an attribute definition for the attribute ones, the imported roots for `adopt`.
    *
-   * Left as-is, including its wire naming: `data` is one of the opaque keys the
-   * camelCase boundary does not rewrite, because which shape it holds depends on the
-   * action. Reach for the single-action methods when you want a typed result.
+   * Left as-is, including its wire naming: `data` is an opaque key the camelCase boundary
+   * does not rewrite, because which shape it holds depends on the verb. Reach for the
+   * single-action methods when you want a typed result.
    */
-  data?: unknown
+  data: Record<string, unknown> | null
 }
+
+/** @deprecated Renamed {@link ContentTypeResult}, matching {@link FacetResult}. */
+export type BatchActionResult = ContentTypeResult
 
 export interface ContentTypeListOptions {
   /** Restrict to the subtree rooted at this path. */
@@ -262,15 +280,197 @@ export interface DefineAttributeOptions {
 }
 
 /**
- * One helper posts the action; the named operations just name their fields. Mirrors the
- * facet helper on `File`. Every action is idempotent server-side.
+ * One taxonomy write, applied by {@link ContentType.batch}.
+ *
+ * Build these with the statics: each takes the same arguments in the same order as the
+ * `ContentType` operation of the same name, minus `client`, so a batch is a transcription
+ * of the single-action calls it replaces.
+ *
+ * ```ts
+ * await ContentType.batch(client, [
+ *   ContentTypeAction.define("compliance", "Compliance"),
+ *   ContentTypeAction.defineAttribute("compliance", "owner", AttributeType.text),
+ * ])
+ * ```
+ *
+ * One wide shape rather than five, which is how the API models it too: the fields are the
+ * union of the five action shapes, each documented with the verbs it belongs to, and the
+ * private constructor means only the statics can fill them, so each verb gets exactly
+ * its own. A raw wire body is the escape hatch for a verb the SDK does not model yet.
+ * Nothing is sent until the list reaches `batch()`, so one list seeds many tenants.
  */
-function action(
+export class ContentTypeAction {
+  /** The write to perform, the API's verb (see {@link ContentTypeActionType}). */
+  declare readonly action: ContentTypeActionType
+  /** Template root paths to import; `adopt` only. */
+  declare readonly contentTypes?: readonly string[]
+  /** Parent node path; `define` only, absent for a root. */
+  declare readonly parentPath?: string
+  /** The node's own segment, lowercase with hyphens; `define` only. */
+  declare readonly code?: string
+  /** Node the action applies to; every verb but `adopt` and `define`. */
+  declare readonly contentTypePath?: string
+  /** Human-readable label; required by `define`, optional on `defineAttribute`. */
+  declare readonly label?: string
+  /** Free-text description; `define` and `defineAttribute`. */
+  declare readonly description?: string
+  /** Whether children inherit this node's attributes (server default true); `define`. */
+  declare readonly inheritAttributes?: boolean
+  /** Attribute identifier, snake_case; `defineAttribute` and `undefineAttribute`. */
+  declare readonly name?: string
+  /** An {@link AttributeType}, or the equivalent string; `defineAttribute` only. */
+  declare readonly attributeType?: AttributeType | string
+  /** Whether the schema requires a value (server default false); `defineAttribute`. */
+  declare readonly required?: boolean
+  /** Allowed values, required for select and multi-select; `defineAttribute` only. */
+  declare readonly choices?: readonly string[]
+
+  // `declare` fields plus one assign: a plain field would be defined as an own property
+  // set to undefined on every action, whatever its verb.
+  private constructor(
+    fields: {
+      -readonly [K in keyof ContentTypeAction]?: ContentTypeAction[K] | undefined
+    },
+  ) {
+    Object.assign(this, compact(fields))
+  }
+
+  /**
+   * Import starter trees, the batch form of {@link ContentType.adopt}.
+   *
+   * @param paths - Template root paths to import, e.g. `["legal", "finance"]`.
+   * @returns The action, unsent.
+   */
+  static adopt(paths: readonly string[]): ContentTypeAction {
+    return new ContentTypeAction({
+      action: ContentTypeActionType.adopt,
+      contentTypes: [...paths],
+    })
+  }
+
+  /**
+   * Create or update a node, the batch form of {@link ContentType.define}.
+   *
+   * @param code - This node's own segment, lowercase alphanumeric with hyphens.
+   * @param label - Human-readable label.
+   * @param options - Parent, description, and attribute inheritance.
+   * @returns The action, unsent.
+   */
+  static define(
+    code: string,
+    label: string,
+    options: DefineOptions = {},
+  ): ContentTypeAction {
+    return new ContentTypeAction({
+      action: ContentTypeActionType.defineContentType,
+      code,
+      label,
+      parentPath: options.parent === undefined ? undefined : toPath(options.parent),
+      description: options.description,
+      inheritAttributes: options.inheritAttributes,
+    })
+  }
+
+  /**
+   * Delete a node and its subtree, the batch form of {@link ContentType.undefine}.
+   *
+   * @param contentType - The node to delete, or its path.
+   * @returns The action, unsent.
+   */
+  static undefine(contentType: PathRef): ContentTypeAction {
+    return new ContentTypeAction({
+      action: ContentTypeActionType.undefineContentType,
+      contentTypePath: toPath(contentType),
+    })
+  }
+
+  /**
+   * Add an attribute, the batch form of {@link ContentType.defineAttribute}.
+   *
+   * @param contentType - The node to define it on, or its path.
+   * @param name - Attribute identifier, snake_case.
+   * @param attributeType - An {@link AttributeType}, or the equivalent string.
+   * @param options - Choices, label, description and whether it is required.
+   * @returns The action, unsent.
+   * @throws Error - If a `select`/`multi-select` is missing `choices`. The API rejects
+   *   that with a 422 anyway; catching it here saves the round trip.
+   */
+  static defineAttribute(
+    contentType: PathRef,
+    name: string,
+    attributeType: AttributeType | string,
+    options: DefineAttributeOptions = {},
+  ): ContentTypeAction {
+    // ponytail: the canonical values only. The API also accepts the `multiselect` and
+    // `multi_select` aliases; those reach its 422 rather than a hand-kept copy of a
+    // vocabulary the SDK does not own.
+    const needsChoices =
+      attributeType === AttributeType.select ||
+      attributeType === AttributeType.multiSelect
+    if (needsChoices && !options.choices?.length) {
+      throw new Error(`${attributeType} needs choices`)
+    }
+    return new ContentTypeAction({
+      action: ContentTypeActionType.defineAttribute,
+      contentTypePath: toPath(contentType),
+      name,
+      attributeType,
+      choices: options.choices && [...options.choices],
+      label: options.label,
+      description: options.description,
+      required: options.required,
+    })
+  }
+
+  /**
+   * Remove an attribute, the batch form of {@link ContentType.undefineAttribute}.
+   *
+   * @param contentType - The node it is defined on, or its path.
+   * @param name - Attribute identifier to remove.
+   * @returns The action, unsent.
+   */
+  static undefineAttribute(contentType: PathRef, name: string): ContentTypeAction {
+    return new ContentTypeAction({
+      action: ContentTypeActionType.undefineAttribute,
+      contentTypePath: toPath(contentType),
+      name,
+    })
+  }
+}
+
+/**
+ * The one place that knows a taxonomy action's wire names. The single-action operations
+ * post exactly this too, so single and batch cannot drift. `compact` drops what is unset
+ * and keeps `false`, which is a value.
+ *
+ * @internal
+ */
+export function contentTypeBody(action: ContentTypeAction): Record<string, unknown> {
+  return compact({
+    action: action.action,
+    content_types: action.contentTypes,
+    parent_path: action.parentPath,
+    code: action.code,
+    content_type_path: action.contentTypePath,
+    label: action.label,
+    description: action.description,
+    inherit_attributes: action.inheritAttributes,
+    name: action.name,
+    attribute_type: action.attributeType,
+    required: action.required,
+    choices: action.choices,
+  })
+}
+
+/**
+ * One helper posts the action; the named operations just build it. Mirrors the facet
+ * helper on `File`. Every action is idempotent server-side.
+ */
+function post(
   client: Transport,
-  name: string,
-  fields: Record<string, unknown>,
+  action: ContentTypeAction,
 ): Promise<Record<string, unknown>> {
-  return client.request("POST", BASE, { json: compact({ action: name, ...fields }) })
+  return client.request("POST", BASE, { json: contentTypeBody(action) })
 }
 
 export const ContentType = {
@@ -319,7 +519,7 @@ export const ContentType = {
    * @returns The imported top-level nodes.
    */
   async adopt(client: Transport, paths: readonly string[]): Promise<ContentType[]> {
-    const data = (await action(client, "adopt", { content_types: [...paths] })) as {
+    const data = (await post(client, ContentTypeAction.adopt(paths))) as {
       contentTypes: ContentType[]
     }
     return data.contentTypes
@@ -344,13 +544,7 @@ export const ContentType = {
     label: string,
     options: DefineOptions = {},
   ): Promise<ContentType> {
-    const node = await action(client, "define_content_type", {
-      code,
-      label,
-      parent_path: options.parent === undefined ? undefined : toPath(options.parent),
-      description: options.description,
-      inherit_attributes: options.inheritAttributes,
-    })
+    const node = await post(client, ContentTypeAction.define(code, label, options))
     return node as unknown as ContentType
   },
 
@@ -361,9 +555,7 @@ export const ContentType = {
    * @param contentType - The node to delete, or its path.
    */
   async undefine(client: Transport, contentType: PathRef): Promise<void> {
-    await action(client, "undefine_content_type", {
-      content_type_path: toPath(contentType),
-    })
+    await post(client, ContentTypeAction.undefine(contentType))
   },
 
   /**
@@ -385,21 +577,10 @@ export const ContentType = {
     attributeType: AttributeType | string,
     options: DefineAttributeOptions = {},
   ): Promise<Attribute> {
-    const needsChoices =
-      attributeType === AttributeType.select ||
-      attributeType === AttributeType.multiSelect
-    if (needsChoices && !options.choices?.length) {
-      throw new Error(`${attributeType} needs choices`)
-    }
-    const attribute = await action(client, "define_attribute", {
-      content_type_path: toPath(contentType),
-      name,
-      attribute_type: attributeType,
-      choices: options.choices,
-      label: options.label,
-      description: options.description,
-      required: options.required,
-    })
+    const attribute = await post(
+      client,
+      ContentTypeAction.defineAttribute(contentType, name, attributeType, options),
+    )
     return attribute as unknown as Attribute
   },
 
@@ -415,45 +596,61 @@ export const ContentType = {
     contentType: PathRef,
     name: string,
   ): Promise<void> {
-    await action(client, "undefine_attribute", {
-      content_type_path: toPath(contentType),
-      name,
-    })
+    await post(client, ContentTypeAction.undefineAttribute(contentType, name))
   },
 
   /**
-   * Apply several taxonomy actions in one request.
+   * Apply up to 50 taxonomy actions in one request.
    *
-   * Each entry is the body a single-action method would send, so a tree and its
-   * attributes land together instead of one round trip each:
+   * The batch form of `adopt`/`define`/`undefine`/`defineAttribute`/`undefineAttribute`.
+   * Build the list with {@link ContentTypeAction}, whose statics take the same arguments
+   * as those operations, so a whole tree and its attributes land together:
    *
    * ```ts
    * await ContentType.batch(client, [
-   *   { action: "adopt", content_types: ["legal"] },
-   *   {
-   *     action: "define_attribute",
-   *     content_type_path: "legal",
-   *     name: "jurisdiction",
-   *     attribute_type: "select",
+   *   ContentTypeAction.adopt(["legal"]),
+   *   ContentTypeAction.defineAttribute("legal", "jurisdiction", AttributeType.select, {
    *     choices: ["FR", "US"],
-   *   },
+   *   }),
    * ])
    * ```
    *
-   * The entries are wire bodies, so their keys are the server's, not the SDK's.
+   * **Not transactional.** Field-level mistakes are caught up front, so a malformed
+   * action applies nothing. A domain error (an unknown parent path, a permission denial)
+   * stops at that action: everything before it is already applied, and the thrown error
+   * carries its 0-based position on `.index`. Every action is idempotent, so correct that
+   * one and resend the whole list.
    *
    * @param client - The client to write with.
-   * @param actions - The action bodies, in order.
-   * @returns One result per action, in the same order.
+   * @param actions - The actions, in order, at most 50. `ContentTypeAction`s, or raw wire
+   *   bodies for a verb the SDK does not model yet, mixed freely. Empty is a local no-op.
+   *   A longer job is yours to split: chunking here would report an index relative to a
+   *   batch you never wrote.
+   * @returns One result per action, in the order sent, so `results[i]` belongs to
+   *   `actions[i]`. Only ever complete: a failure throws instead.
+   * @throws Error - If more than 50 actions are passed (refused here to save the round
+   *   trip).
+   * @throws LightOnAPIError - If an action fails. `.index` is the one that did, and the
+   *   actions before it are already applied.
    */
   async batch(
     client: Transport,
-    actions: readonly Record<string, unknown>[],
-  ): Promise<BatchActionResult[]> {
-    const data = await client.request<{ results: BatchActionResult[] }>(
+    actions: readonly (ContentTypeAction | Record<string, unknown>)[],
+  ): Promise<ContentTypeResult[]> {
+    if (actions.length === 0) return []
+    if (actions.length > MAX_CONTENT_TYPE_ACTIONS) {
+      throw new Error(
+        `a batch takes at most ${MAX_CONTENT_TYPE_ACTIONS} actions, got ` +
+          `${actions.length}; send them ${MAX_CONTENT_TYPE_ACTIONS} at a time`,
+      )
+    }
+    const bodies = actions.map((a) =>
+      a instanceof ContentTypeAction ? contentTypeBody(a) : a,
+    )
+    const data = await client.request<{ results: ContentTypeResult[] }>(
       "POST",
       `${BASE}/batch`,
-      { json: { actions: [...actions] } },
+      { json: { actions: bodies } },
     )
     return data.results
   },

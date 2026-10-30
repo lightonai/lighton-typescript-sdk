@@ -23,7 +23,9 @@ const RUNTIME_EXPORTS = [
   "Workspace",
   "waitAll",
   "ContentType",
+  "ContentTypeAction",
   "FacetAction",
+  "MAX_CONTENT_TYPE_ACTIONS",
   "MAX_FACET_ACTIONS",
   "BatchIngestJob",
   // jobs
@@ -32,6 +34,7 @@ const RUNTIME_EXPORTS = [
   "ExtractJob",
   // enums
   "AttributeType",
+  "ContentTypeActionType",
   "DownloadPurpose",
   "ExecMode",
   "FacetActionType",

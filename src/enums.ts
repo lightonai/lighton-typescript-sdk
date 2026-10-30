@@ -49,6 +49,24 @@ export const AttributeType = {
 export type AttributeType = (typeof AttributeType)[keyof typeof AttributeType]
 
 /**
+ * The wire verb in a taxonomy action (`ContentType.batch()`).
+ *
+ * `define_content_type`/`undefine_content_type` are the API's names for what
+ * `ContentType.define()` and `ContentType.undefine()` do. The `ContentTypeAction` statics
+ * keep the SDK's names so a batch reads like the single-action calls it replaces; this
+ * vocabulary keeps the API's, which is what goes over the wire.
+ */
+export const ContentTypeActionType = {
+  adopt: "adopt",
+  defineContentType: "define_content_type",
+  undefineContentType: "undefine_content_type",
+  defineAttribute: "define_attribute",
+  undefineAttribute: "undefine_attribute",
+} as const
+export type ContentTypeActionType =
+  (typeof ContentTypeActionType)[keyof typeof ContentTypeActionType]
+
+/**
  * The wire verb in a file-facet action (`file.batchFacets()`).
  *
  * `set_value`/`clear_value` are the API's names for what `file.setAttribute()` and
