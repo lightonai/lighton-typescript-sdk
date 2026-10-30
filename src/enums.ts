@@ -48,6 +48,22 @@ export const AttributeType = {
 } as const
 export type AttributeType = (typeof AttributeType)[keyof typeof AttributeType]
 
+/**
+ * The wire verb in a file-facet action (`file.batchFacets()`).
+ *
+ * `set_value`/`clear_value` are the API's names for what `file.setAttribute()` and
+ * `file.clearAttribute()` do. The `FacetAction` statics keep the SDK's names so a batch
+ * reads like the single-action calls it replaces; this vocabulary keeps the API's, which
+ * is what goes over the wire.
+ */
+export const FacetActionType = {
+  classify: "classify",
+  unclassify: "unclassify",
+  setValue: "set_value",
+  clearValue: "clear_value",
+} as const
+export type FacetActionType = (typeof FacetActionType)[keyof typeof FacetActionType]
+
 /** Reprocessing level queued on a File (`pendingReprocess`), `update` = replacement. */
 export const ReprocessLevel = {
   reparse: "reparse",

@@ -11,14 +11,20 @@
 
 import { ActiveRecord, getOne, listAll } from "./activeRecord.ts"
 import type { Query, Transport } from "./client.ts"
-import type { Facet } from "./contentType.ts"
+import {
+  type Facet,
+  FacetAction,
+  type FacetResult,
+  facetBody,
+  MAX_FACET_ACTIONS,
+} from "./contentType.ts"
 import { DownloadPurpose, type FileStatus, type ReprocessLevel } from "./enums.ts"
 import { LightOnError } from "./errors.ts"
 import { resolveTagIds, type TagRef } from "./tag.ts"
 import type { ExternalMetadata, Thumbnail } from "./types/file.ts"
 import type { FileFilters, Page } from "./types/index.ts"
 import { basename, toFilePart } from "./upload.ts"
-import { compact, type IdRef, ids, type PathRef, path as toPath } from "./utils.ts"
+import { compact, type IdRef, ids, type PathRef } from "./utils.ts"
 
 const BASE = "/api/v3/files"
 
@@ -424,25 +430,20 @@ export class File extends ActiveRecord {
     return this
   }
 
-  #facet(
-    action: string,
-    contentType: PathRef,
-    extra: Record<string, unknown> = {},
-  ): Promise<Record<string, unknown>> {
-    return this.api("POST", `${BASE}/${this.id}/facets`, {
-      json: { action, content_type_path: toPath(contentType), ...extra },
-    })
+  /** `facetBody` is the single wire encoder, shared with `batchFacets`. */
+  #facet(action: FacetAction): Promise<Record<string, unknown>> {
+    return this.api("POST", `${BASE}/${this.id}/facets`, { json: facetBody(action) })
   }
 
   /** Assign a content type to this file. */
   async classify(contentType: PathRef): Promise<this> {
-    await this.#facet("classify", contentType)
+    await this.#facet(FacetAction.classify(contentType))
     return this
   }
 
   /** Remove a content-type assignment from this file. */
   async unclassify(contentType: PathRef): Promise<this> {
-    await this.#facet("unclassify", contentType)
+    await this.#facet(FacetAction.unclassify(contentType))
     return this
   }
 
@@ -459,14 +460,58 @@ export class File extends ActiveRecord {
     name: string,
     value: unknown,
   ): Promise<this> {
-    await this.#facet("set_value", contentType, { attribute_name: name, value })
+    await this.#facet(FacetAction.setAttribute(contentType, name, value))
     return this
   }
 
   /** Clear an attribute value under an assigned content type. */
   async clearAttribute(contentType: PathRef, name: string): Promise<this> {
-    await this.#facet("clear_value", contentType, { attribute_name: name })
+    await this.#facet(FacetAction.clearAttribute(contentType, name))
     return this
+  }
+
+  /**
+   * Apply up to 50 classification writes in one request.
+   *
+   * The batch form of `classify`/`unclassify`/`setAttribute`/`clearAttribute`. Build the
+   * list with {@link FacetAction}, whose statics take the same arguments as those
+   * methods. Beyond saving round trips, the document is reindexed once per batch instead
+   * of once per action, which is the real win on a full classification.
+   *
+   * **Not transactional.** Field-level mistakes are caught up front, so a malformed
+   * action applies nothing. A domain error (unknown content type, setting a value before
+   * classifying, a sibling conflict) stops at that action: everything before it is
+   * already applied, and the thrown error carries its 0-based position on `.index`.
+   * Every action is idempotent, so correct that one and resend the whole list.
+   *
+   * @param actions - The actions, in order, at most 50. `FacetAction`s, or raw wire
+   *   bodies for a verb the SDK does not model yet, mixed freely. Empty is a local no-op.
+   *   A longer job is yours to split: chunking here would forfeit the single reindex and
+   *   report an index relative to a batch you never wrote.
+   * @returns One result per action, in the order sent, so `results[i]` belongs to
+   *   `actions[i]`. Only ever complete: a failure throws instead.
+   * @throws Error - If this file is not persisted, or more than 50 actions are passed
+   *   (refused here to save the round trip).
+   * @throws LightOnAPIError - If an action fails. `.index` is the one that did, and the
+   *   actions before it are already applied.
+   */
+  async batchFacets(
+    actions: readonly (FacetAction | Record<string, unknown>)[],
+  ): Promise<FacetResult[]> {
+    if (actions.length === 0) return []
+    if (actions.length > MAX_FACET_ACTIONS) {
+      throw new Error(
+        `a batch takes at most ${MAX_FACET_ACTIONS} actions, got ${actions.length}; ` +
+          `send them ${MAX_FACET_ACTIONS} at a time`,
+      )
+    }
+    const bodies = actions.map((a) => (a instanceof FacetAction ? facetBody(a) : a))
+    const data = await this.api<{ results: FacetResult[] }>(
+      "POST",
+      `${BASE}/${this.id}/facets/batch`,
+      { json: { actions: bodies } },
+    )
+    return data.results
   }
 
   /** List this file's assigned content types and their attribute values. */

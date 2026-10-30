@@ -110,6 +110,26 @@ describe("error mapping", () => {
   })
 })
 
+test("an api error has no index outside a batch", async () => {
+  // Single-action requests never carry one, which is what makes `index` readable.
+  const client = makeClient(() => json(404, { detail: "nope" }))
+  const error = (await client
+    .request("GET", "/x")
+    .catch((e: unknown) => e)) as exc.NotFoundError
+  expect(error.index).toBeNull()
+  expect(error.message).not.toContain("action")
+})
+
+test("an api error carries the batch action index, including 0", async () => {
+  // 0 is a real position, not a falsy sentinel.
+  const client = makeClient(() => json(400, { detail: "unknown type", index: 0 }))
+  const error = (await client
+    .request("GET", "/x")
+    .catch((e: unknown) => e)) as exc.LightOnAPIError
+  expect(error.index).toBe(0)
+  expect(error.message).toContain("(action 0)")
+})
+
 test("rate limit exposes retry-after", async () => {
   const client = makeClient(() =>
     json(429, { detail: "slow down" }, { "Retry-After": "30" }),

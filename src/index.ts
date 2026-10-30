@@ -11,12 +11,16 @@ export {
   type DefineAttributeOptions,
   type DefineOptions,
   type Facet,
+  FacetAction,
+  type FacetResult,
+  MAX_FACET_ACTIONS,
   type Template,
 } from "./contentType.ts"
 export {
   AttributeType,
   DownloadPurpose,
   ExecMode,
+  FacetActionType,
   FileStatus,
   JobStatus,
   RelevanceScoring,
