@@ -9,7 +9,13 @@
  * `create()` is a multipart upload, unlike the JSON `create()` on Workspace and ApiKey.
  */
 
-import { ActiveRecord, getOne, listAll } from "./activeRecord.ts"
+import {
+  ActiveRecord,
+  getOne,
+  listAll,
+  pick,
+  type ReadOptions,
+} from "./activeRecord.ts"
 import type { Query, Transport } from "./client.ts"
 import type { Facet } from "./contentType.ts"
 import { DownloadPurpose, type FileStatus, type ReprocessLevel } from "./enums.ts"
@@ -46,12 +52,19 @@ export interface FileInit {
 export interface FileListOptions {
   workspaceId?: number
   title?: string
+  /** Caller cancellation, applied to every page. */
+  signal?: AbortSignal
   /**
    * Any other filter the endpoint accepts, under its API name: `status`, `tag_id`,
    * `external_metadata__external_id`, `ordering`, date ranges... Where it overlaps
    * `workspaceId` or `title`, those win.
    */
   filters?: FileFilters
+}
+
+export interface GetOptions extends ReadOptions {
+  /** Also return the stored page text under `pages`. See {@link File.pages}. */
+  includeContent?: boolean
 }
 
 export interface CreateOptions {
@@ -167,7 +180,7 @@ export class File extends ActiveRecord {
       ...options.filters,
       ...compact({ workspace_id: options.workspaceId, title: options.title }),
     } as Query
-    return listAll(File, client, params)
+    return listAll(File, client, params, pick(options))
   }
 
   /**
@@ -175,10 +188,18 @@ export class File extends ActiveRecord {
    *
    * @param client - The client to request with and bind to the result.
    * @param id - The file id to retrieve.
+   * @param options - `includeContent` and `signal`. See {@link GetOptions}.
    * @returns The file, bound to `client`.
    */
-  static get(client: Transport, id: number | string): Promise<File> {
-    return getOne(File, client, id)
+  static get(
+    client: Transport,
+    id: number | string,
+    options: GetOptions = {},
+  ): Promise<File> {
+    return getOne(File, client, id, {
+      ...pick(options),
+      ...(options.includeContent ? { params: { include_content: true } } : {}),
+    })
   }
 
   /**
@@ -373,13 +394,14 @@ export class File extends ActiveRecord {
    * A method, not a field: the text can be large, and most callers of `refresh()` don't
    * want it riding along.
    *
+   * @param options - Cancellation. See {@link ReadOptions}.
    * @returns One Page per page. Empty if the document has no stored text.
    */
-  async pages(): Promise<Page[]> {
+  async pages(options: ReadOptions = {}): Promise<Page[]> {
     const data = await this.api<{ pages?: Page[] | null }>(
       "GET",
       `${BASE}/${this.id}`,
-      { params: { include_content: true } },
+      { params: { include_content: true }, ...options },
     )
     return data.pages ?? []
   }
@@ -390,11 +412,16 @@ export class File extends ActiveRecord {
    * Generated asynchronously and **independently of ingestion**, so an embedded file may
    * still have none. Check the `thumbnail` field first.
    *
+   * @param options - Cancellation. See {@link ReadOptions}.
    * @returns The WebP image.
    * @throws NotFoundError - If no thumbnail exists (status is not `READY`).
    */
-  downloadThumbnail(): Promise<Uint8Array> {
-    return this.api<Uint8Array>("GET", `${BASE}/${this.id}/thumbnail`, { raw: true })
+  downloadThumbnail(options: ReadOptions = {}): Promise<Uint8Array> {
+    return this.api<Uint8Array>("GET", `${BASE}/${this.id}/thumbnail`, {
+      raw: true,
+      accept: "image/webp",
+      ...options,
+    })
   }
 
   /**

@@ -1,6 +1,7 @@
 /** Shared helpers. */
 
 import type { Query } from "./client.ts"
+import { LightOnError } from "./errors.ts"
 
 /**
  * Response keys whose *values* are copied through untouched.
@@ -113,32 +114,62 @@ interface PaginatedPage<T> {
   next?: string | null
 }
 
+/** Knobs for {@link paginate}. @internal */
+export interface PaginateOptions {
+  /** Caller cancellation, applied to every page. */
+  signal?: AbortSignal
+  /** Most pages to follow before failing. Default 10_000. */
+  maxPages?: number
+}
+
+/** Default ceiling on pages followed by one `list()`. */
+export const DEFAULT_MAX_PAGES = 10_000
+
 /**
  * Fetch every page of a paginated endpoint, following `next` to the end.
  *
  * No silent truncation: a caller asking to list gets everything. The query is sent on
  * the first request only, because `next` is an absolute URL already carrying it.
  *
+ * A repeated `next` or more than `maxPages` pages fails rather than running forever.
+ *
  * @param transport - The client to send through.
  * @param base - Path under the base URL, e.g. `/api/v3/tags`.
  * @param params - Optional query filters, sent on the first page.
+ * @param options - Cancellation and the page ceiling. See {@link PaginateOptions}.
  * @returns Every row, in server order.
+ * @throws LightOnError - If a `next` link repeats or the page ceiling is reached.
  */
 export async function paginate<T>(
   transport: {
-    request<R>(method: string, path: string, options?: { params?: Query }): Promise<R>
+    request<R>(
+      method: string,
+      path: string,
+      options?: { params?: Query; signal?: AbortSignal },
+    ): Promise<R>
   },
   base: string,
   params?: Query,
+  options: PaginateOptions = {},
 ): Promise<T[]> {
+  const maxPages = options.maxPages ?? DEFAULT_MAX_PAGES
   const items: T[] = []
+  const seen = new Set<string>()
   let next: string | null = base
   let query = params
   while (next) {
+    if (seen.has(next)) throw new LightOnError(`pagination loops back to ${next}`)
+    if (seen.size >= maxPages) {
+      throw new LightOnError(`pagination exceeded ${maxPages} pages`)
+    }
+    seen.add(next)
     const page: PaginatedPage<T> = await transport.request<PaginatedPage<T>>(
       "GET",
       next,
-      query ? { params: query } : {},
+      {
+        ...(query ? { params: query } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
+      },
     )
     items.push(...page.results)
     next = page.next ?? null

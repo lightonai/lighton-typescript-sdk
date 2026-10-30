@@ -11,7 +11,18 @@
  */
 
 import type { Query, RequestOptions, Transport } from "./client.ts"
-import { paginate } from "./utils.ts"
+import { type PaginateOptions, paginate } from "./utils.ts"
+
+/** Per-call knobs shared by every resource read. */
+export interface ReadOptions {
+  /** Caller cancellation, merged with the client's timeout. */
+  signal?: AbortSignal
+}
+
+/** Only `signal`, and only when set: `exactOptionalPropertyTypes` forbids `undefined`. @internal */
+export function pick(options: ReadOptions): ReadOptions {
+  return options.signal ? { signal: options.signal } : {}
+}
 
 /** The static side of a resource class, as `list`/`get` need to see it. */
 export interface RecordClass<T extends ActiveRecord> {
@@ -56,17 +67,22 @@ export abstract class ActiveRecord {
   /**
    * Re-fetch this resource from the API.
    *
+   * @param options - Cancellation. See {@link ReadOptions}.
    * @returns `this`, updated with the latest field values.
    */
-  async refresh(): Promise<this> {
+  async refresh(options: ReadOptions = {}): Promise<this> {
     const base = (this.constructor as typeof ActiveRecord).base
-    return this.absorb(await this.api("GET", `${base}/${this.id}`))
+    return this.absorb(await this.api("GET", `${base}/${this.id}`, options))
   }
 
-  /** Delete this resource and clear its local id. */
-  async delete(): Promise<void> {
+  /**
+   * Delete this resource and clear its local id.
+   *
+   * @param options - Cancellation. See {@link ReadOptions}.
+   */
+  async delete(options: ReadOptions = {}): Promise<void> {
     const base = (this.constructor as typeof ActiveRecord).base
-    await this.api("DELETE", `${base}/${this.id}`)
+    await this.api("DELETE", `${base}/${this.id}`, options)
     this.id = null
   }
 
@@ -132,6 +148,7 @@ export abstract class ActiveRecord {
  * @param cls - The resource class to build rows into.
  * @param client - The client to request with and bind to each result.
  * @param params - Optional query filters, sent on the first page.
+ * @param options - Cancellation and the page ceiling. See {@link PaginateOptions}.
  * @returns All matching resources, each bound to `client`.
  * @internal
  */
@@ -139,11 +156,12 @@ export async function listAll<T extends ActiveRecord>(
   cls: RecordClass<T>,
   client: Transport,
   params?: Query,
+  options: PaginateOptions = {},
 ): Promise<T[]> {
   // `page` would start the walk part-way through and silently drop what came before.
   // The filter types already omit it; this covers untyped callers.
   const { page: _page, ...query } = params ?? {}
-  const rows = await paginate<Record<string, unknown>>(client, cls.base, query)
+  const rows = await paginate<Record<string, unknown>>(client, cls.base, query, options)
   return rows.map((row) => ActiveRecord.hydrate(cls, client, row))
 }
 
@@ -153,6 +171,7 @@ export async function listAll<T extends ActiveRecord>(
  * @param cls - The resource class to build the row into.
  * @param client - The client to request with and bind to the result.
  * @param id - The resource id to retrieve.
+ * @param options - Cancellation, plus any query the resource's detail endpoint takes.
  * @returns The resource, bound to `client`.
  * @internal
  */
@@ -160,7 +179,12 @@ export async function getOne<T extends ActiveRecord>(
   cls: RecordClass<T>,
   client: Transport,
   id: number | string,
+  options: ReadOptions & { params?: Query } = {},
 ): Promise<T> {
-  const data = await client.request<Record<string, unknown>>("GET", `${cls.base}/${id}`)
+  const data = await client.request<Record<string, unknown>>(
+    "GET",
+    `${cls.base}/${id}`,
+    options,
+  )
   return ActiveRecord.hydrate(cls, client, data)
 }

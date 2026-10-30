@@ -51,6 +51,8 @@ const RUNTIME_EXPORTS = [
   "RateLimitError",
   "ServerError",
   "MaintenanceError",
+  "ResponseTooLargeError",
+  "UnsafeUrlError",
   "fromResponse",
   // schema helpers
   "asJsonSchema",
