@@ -377,8 +377,9 @@ async function seedTaxonomy(c: Ctx): Promise<ContentType[]> {
     `defined ${code} (+child, +batched), attributes ${attr.name}/${select.name}/${batched.name}`,
   )
 
+  // Not `undefine`: the API made undefining an unknown path an idempotent no-op (204).
   const failed = await ContentType.batch(c.client, [
-    ContentTypeAction.undefine("nope:not-a-type"),
+    ContentTypeAction.defineAttribute("nope:not-a-type", "nope", AttributeType.text),
   ]).then(
     () => null,
     (e: unknown) => e,
