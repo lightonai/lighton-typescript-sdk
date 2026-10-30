@@ -120,6 +120,37 @@ Adding a fourth opaque key means adding a test that fails without it.
 - **Only push behavior into the base when a new resource actually shares it.** Do not generalize
   speculatively for a shape only one subclass needs.
 
+### Batch writes
+
+`file.batchFacets(actions)` posts up to 50 classification writes to `/files/{id}/facets/batch`.
+
+- **Typed both ways, unlike `ContentType.batch`.** A file-facet action has exactly one shape (four
+  fields, four verbs), which `FacetAction` models cleanly; a taxonomy action spans five shapes. Raw
+  wire bodies are still accepted alongside `FacetAction`, so the escape hatch is what the two share.
+- **`FacetAction` is a class with a private constructor**, built only through its statics. That is
+  the port of pydantic's validator plus `extra="forbid"`: a value verb cannot be built without its
+  attribute name, nor a field misspelled, and both are compile errors rather than runtime checks
+  (a type test pins it). Being a class is also what lets `instanceof` tell it apart from a raw body.
+- **Naming split.** The statics carry the SDK's method names (`setAttribute`/`clearAttribute`) so a
+  batch is a transcription of the one-by-one calls; `FacetActionType` and the wire carry the API's
+  (`set_value`/`clear_value`). `batchFacets`, not `batch`, because `Workspace` and `batch.ts` already
+  own a batch *ingest* concept.
+- **One wire encoder.** `facetBody()` is the only place that knows the body field names, and the four
+  single-action methods post it too, so they cannot drift from the batch; a test pins single bodies
+  equal to batch bodies. `value` is sent as null rather than dropped, matching the Python SDK.
+- **The cap throws client-side, and is not chunked.** Empty is a local no-op. Chunking would scatter
+  the fail-fast boundary (the reported `index` would be relative to a batch the caller never wrote)
+  and forfeit the single reindex that is the whole reason the endpoint exists.
+- **Partial commit, unlike `deleteMany`.** The endpoint commits the prefix before a failure and does
+  not return those results, so the *position* is the payload: `LightOnAPIError.index`, parsed in the
+  base constructor so every subclass inherits it, and appended to the message (`(action 3)`). Not a
+  `BatchActionError` subclass, because the API sends `index` on 400/403/404/422 alike, and a
+  body-keyed class would break `instanceof NotFoundError` for batch callers; `MaintenanceError`
+  stays the one body-keyed mapping. `Number.isInteger`, not truthiness, since index 0 is real.
+- **`FacetResult` is curated, its `data` opaque.** It differs per verb, so it keeps the server's
+  naming like `ContentType.batch` results. No back-reference to the action: results only come back
+  on success, complete and in order, so `results[i]` is `actions[i]` by construction.
+
 ### TypeScript-specific hazards, each hit in practice
 
 - **`static bind` shadows `Function.prototype.bind`**, which every class constructor inherits.

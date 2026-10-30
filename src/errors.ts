@@ -38,6 +38,16 @@ export class LightOnAPIError extends LightOnError {
   override name = "LightOnAPIError"
   readonly statusCode: number
   readonly body: unknown
+  /**
+   * The 0-based position of the failing action, set only when a **batch** endpoint
+   * fails; null for a single-action request, which never carries one.
+   *
+   * Batch endpoints validate every action's fields up front (a field-level 422 runs
+   * nothing), then apply them in order and stop at the first domain error, so the
+   * actions before `index` are already applied and the one at `index` is not. Every
+   * action is idempotent: correct that one and resend the whole list.
+   */
+  readonly index: number | null
 
   constructor(
     message: string,
@@ -46,6 +56,7 @@ export class LightOnAPIError extends LightOnError {
     super(message, { cause: options.cause })
     this.statusCode = options.statusCode
     this.body = options.body ?? null
+    this.index = batchIndex(this.body)
   }
 }
 
@@ -160,7 +171,10 @@ export async function fromResponse(response: Response): Promise<LightOnAPIError>
   const status = response.statusText
     ? `${statusCode} ${response.statusText}`
     : String(statusCode)
-  const message = detail ? `${status}: ${String(detail)}` : status
+  const index = batchIndex(body)
+  const message =
+    (detail ? `${status}: ${String(detail)}` : status) +
+    (index === null ? "" : ` (action ${index})`)
 
   if (statusCode === 429) {
     return new RateLimitError(message, {
@@ -196,6 +210,12 @@ function retryAfterSeconds(response: Response): number | null {
   if (raw === null) return null
   const seconds = Number(raw)
   return Number.isFinite(seconds) ? seconds : null
+}
+
+/** The failing action's position inside a batch, or null. Index 0 is a real answer. */
+function batchIndex(body: unknown): number | null {
+  const value = isRecord(body) ? body.index : undefined
+  return Number.isInteger(value) ? (value as number) : null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

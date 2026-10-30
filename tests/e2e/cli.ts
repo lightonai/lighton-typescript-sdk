@@ -30,8 +30,11 @@ import {
   ContentType,
   DownloadPurpose,
   ExecMode,
+  FacetAction,
   File,
   LightOn,
+  LightOnAPIError,
+  MAX_FACET_ACTIONS,
   NotFoundError,
   RelevanceScoring,
   Role,
@@ -439,6 +442,69 @@ step(
         typeof value === "string" ? `${attr.name}:${value}` : attr.name
       say(`left attribute filter ${JSON.stringify(c.attributeFilter)} on the file`)
     }
+  },
+)
+
+step(
+  "facet_batch",
+  "batchFacets: many writes in one request, the fail-fast index, the 50 cap",
+  async (c) => {
+    const f = uploadedOf(c)
+    const ct = c.contentType
+    if (!ct) {
+      say("nothing classified, run with --only content_types --only facet_batch")
+      return
+    }
+
+    // Only `ct`: classifying a sibling from the same tree is a 400 by design.
+    const actions = [FacetAction.classify(ct)]
+    const attr = (ct.attributes ?? []).find((a) => sampleValue(a) !== undefined)
+    if (attr) {
+      actions.push(
+        FacetAction.setAttribute(ct, attr.name, sampleValue(attr)),
+        FacetAction.clearAttribute(ct, attr.name),
+        // restore: facet_filters (the next step) filters on this value
+        FacetAction.setAttribute(ct, attr.name, sampleValue(attr)),
+      )
+    }
+    const results = await f.batchFacets(actions)
+    assert.equal(results.length, actions.length, "one result per action")
+    assert.ok(
+      results.every((r) => r.status < 300),
+      `batch reported ${JSON.stringify(results.map((r) => r.status))}`,
+    )
+    say(
+      `${actions.length} action(s) in one request -> ${JSON.stringify(results.map((r) => r.status))}`,
+    )
+
+    // A domain error fails fast and names the offender; what came before it sticks.
+    const failed = await f
+      .batchFacets([
+        FacetAction.classify(ct),
+        FacetAction.classify(`no-such-${c.stamp}`),
+      ])
+      .then(
+        () => null,
+        (e: unknown) => e,
+      )
+    assert.ok(
+      failed instanceof LightOnAPIError,
+      "an unknown content type should have failed the batch",
+    )
+    assert.equal(failed.index, 1, `expected index 1, got ${failed.index}`)
+    say(`fail-fast reported index ${failed.index}`)
+    assert.ok(
+      (await f.facets()).some((x) => x.path === ct.path),
+      "the committed prefix did not stick",
+    )
+
+    assert.deepEqual(await f.batchFacets([]), [], "an empty batch should be a no-op")
+    await assert.rejects(
+      () => f.batchFacets(Array(MAX_FACET_ACTIONS + 1).fill(FacetAction.classify(ct))),
+      /at most/,
+      `${MAX_FACET_ACTIONS + 1} actions should be refused`,
+    )
+    say(`over ${MAX_FACET_ACTIONS} actions: refused client-side, no round trip`)
   },
 )
 

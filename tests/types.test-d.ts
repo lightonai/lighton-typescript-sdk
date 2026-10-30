@@ -6,6 +6,7 @@
  */
 
 import { expectTypeOf, test } from "vitest"
+import { FacetAction } from "../src/contentType.ts"
 import type {
   AskResultItem,
   ExtractJobResponse,
@@ -33,6 +34,13 @@ test("extracted rows keep the caller's own keys", () => {
     data: { last_name: string }
   }>()
   expectTypeOf<Row>().not.toBeNever()
+})
+
+test("a FacetAction is only built through its statics", () => {
+  // The counterpart of pydantic's validator and `extra="forbid"`: a hand-built action
+  // could drop `attributeName` from a value verb, or misspell a field.
+  // @ts-expect-error the constructor is private
+  expectTypeOf(new FacetAction("set_value", "legal")).not.toBeNever()
 })
 
 test("optionality survives the rewrite", () => {

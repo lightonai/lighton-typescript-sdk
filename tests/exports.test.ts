@@ -23,6 +23,8 @@ const RUNTIME_EXPORTS = [
   "Workspace",
   "waitAll",
   "ContentType",
+  "FacetAction",
+  "MAX_FACET_ACTIONS",
   "BatchIngestJob",
   // jobs
   "Job",
@@ -32,6 +34,7 @@ const RUNTIME_EXPORTS = [
   "AttributeType",
   "DownloadPurpose",
   "ExecMode",
+  "FacetActionType",
   "FileStatus",
   "JobStatus",
   "RelevanceScoring",

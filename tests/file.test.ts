@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { beforeAll, expect, test } from "vitest"
 import { ActiveRecord } from "../src/activeRecord.ts"
+import { type ContentType, FacetAction, MAX_FACET_ACTIONS } from "../src/contentType.ts"
 import { LightOnError, NotFoundError } from "../src/errors.ts"
 import { File, waitAll } from "../src/file.ts"
 import { json, makeClient } from "./helpers.ts"
@@ -322,6 +323,169 @@ test("facets reads the assigned content types", async () => {
   const facets = await bound(client, { id: 7 }).facets()
   expect(facets[0]?.path).toBe("legal")
   expect(facets[0]?.attributes[0]?.value).toBe("FR")
+})
+
+// --- batchFacets -------------------------------------------------------------
+
+const noRequest = (request: Request): Response => {
+  throw new Error(`no request should be made, got ${request.url}`)
+}
+
+/** `count` results of one status, the shape a successful batch answers with. */
+const ok = (count: number, status = 200) =>
+  json({ results: Array(count).fill({ status, data: null }) })
+
+test("batchFacets posts every action in one request", async () => {
+  const requests: { path: string; body: unknown }[] = []
+  const client = makeClient(async (request) => {
+    requests.push({ path: new URL(request.url).pathname, body: await request.json() })
+    return ok(4, 201)
+  })
+  // A ContentType node and a bare path are both accepted, as everywhere else.
+  const ct: ContentType = { path: "legal:contract:nda", code: "nda", label: "NDA" }
+  await bound(client, { id: 7 }).batchFacets([
+    FacetAction.classify(ct),
+    FacetAction.setAttribute("legal:contract:nda", "jurisdiction", ["FR", "DE"]),
+    FacetAction.setAttribute("legal:contract:nda", "signed", true),
+    FacetAction.clearAttribute(ct, "draft_note"),
+  ])
+
+  expect(requests, "a batch must be exactly one round trip").toHaveLength(1)
+  expect(requests[0]?.path).toBe("/api/v3/files/7/facets/batch")
+  expect(requests[0]?.body).toEqual({
+    actions: [
+      { action: "classify", content_type_path: "legal:contract:nda" },
+      {
+        action: "set_value",
+        content_type_path: "legal:contract:nda",
+        attribute_name: "jurisdiction",
+        value: ["FR", "DE"],
+      },
+      {
+        action: "set_value",
+        content_type_path: "legal:contract:nda",
+        attribute_name: "signed",
+        value: true,
+      },
+      {
+        action: "clear_value",
+        content_type_path: "legal:contract:nda",
+        attribute_name: "draft_note",
+      },
+    ],
+  })
+})
+
+test("batchFacets sends the same bodies as the single-action methods", async () => {
+  // One wire encoder behind both paths, so they cannot drift apart.
+  const single: unknown[] = []
+  const batched: unknown[] = []
+  const client = makeClient(async (request) => {
+    const body = (await request.json()) as { actions?: unknown[] }
+    if (request.url.endsWith("/facets/batch")) {
+      batched.push(...(body.actions ?? []))
+      return ok(4)
+    }
+    single.push(body)
+    return json({})
+  })
+  const ct = "legal:contract:nda"
+  const file = bound(client, { id: 7 })
+  await file.classify(ct)
+  await file.setAttribute(ct, "jurisdiction", "FR")
+  await file.clearAttribute(ct, "jurisdiction")
+  await file.unclassify(ct)
+  await file.batchFacets([
+    FacetAction.classify(ct),
+    FacetAction.setAttribute(ct, "jurisdiction", "FR"),
+    FacetAction.clearAttribute(ct, "jurisdiction"),
+    FacetAction.unclassify(ct),
+  ])
+  expect(single).toEqual(batched)
+})
+
+test("batchFacets returns one result per action, in order", async () => {
+  const client = makeClient(() =>
+    json({
+      results: [
+        {
+          status: 201,
+          data: { content_type_path: "legal:contract:nda", label: "NDA" },
+        },
+        { status: 204, data: null },
+        { status: 200, data: { name: "jurisdiction", value: "FR" } },
+      ],
+    }),
+  )
+  const results = await bound(client, { id: 7 }).batchFacets([
+    FacetAction.classify("legal:contract:nda"),
+    FacetAction.clearAttribute("legal:contract:nda", "draft_note"),
+    FacetAction.setAttribute("legal:contract:nda", "jurisdiction", "FR"),
+  ])
+  expect(results.map((r) => r.status)).toEqual([201, 204, 200])
+  expect(results[1]?.data, "the 204 verbs carry no data").toBeNull()
+  // `data` is opaque: it stays in the server's own naming.
+  expect(results[0]?.data).toEqual({
+    content_type_path: "legal:contract:nda",
+    label: "NDA",
+  })
+})
+
+test("batchFacets refuses more than fifty actions, and accepts fifty", async () => {
+  const action = FacetAction.classify("legal:contract:nda")
+  const refused = bound(makeClient(noRequest), { id: 7 })
+  await expect(
+    refused.batchFacets(Array(MAX_FACET_ACTIONS + 1).fill(action)),
+  ).rejects.toThrow(/at most 50/)
+
+  // The boundary itself is accepted: an off-by-one is the plausible bug here.
+  const accepted = bound(
+    makeClient(() => ok(MAX_FACET_ACTIONS)),
+    { id: 7 },
+  )
+  const results = await accepted.batchFacets(Array(MAX_FACET_ACTIONS).fill(action))
+  expect(results).toHaveLength(MAX_FACET_ACTIONS)
+})
+
+test("batchFacets on an empty list is a local no-op", async () => {
+  expect(await bound(makeClient(noRequest), { id: 7 }).batchFacets([])).toEqual([])
+})
+
+test("batchFacets passes raw action bodies through untouched", async () => {
+  let body: { actions: unknown[] } = { actions: [] }
+  const client = makeClient(async (request) => {
+    body = (await request.json()) as typeof body
+    return ok(2)
+  })
+  const raw = { action: "some_future_verb", content_type_path: "legal", extra: 1 }
+  await bound(client, { id: 7 }).batchFacets([FacetAction.classify("legal"), raw])
+  expect(body.actions[1], "a raw body must reach the wire untouched").toEqual(raw)
+})
+
+test("batchFacets reports the failing action's index on the status-mapped error", async () => {
+  // `index` rides on the usual class, so `instanceof NotFoundError` still works.
+  const client = makeClient(() =>
+    json({ detail: "unknown content type", index: 2 }, 404),
+  )
+  const actions = [
+    FacetAction.classify("legal:contract:nda"),
+    FacetAction.setAttribute("legal:contract:nda", "jurisdiction", "FR"),
+    FacetAction.classify("nope:not-a-type"),
+  ]
+  const error = (await bound(client, { id: 7 })
+    .batchFacets(actions)
+    .catch((e: unknown) => e)) as NotFoundError
+  expect(error).toBeInstanceOf(NotFoundError)
+  expect(error.index).toBe(2)
+  expect(error.message, "the position belongs in the message too").toContain("action 2")
+  // Which is what makes the offender addressable; the prefix is already applied.
+  expect(actions[error.index ?? -1]?.contentTypePath).toBe("nope:not-a-type")
+})
+
+test("batchFacets needs a persisted file", async () => {
+  await expect(
+    new File({ workspaceId: 3 }).batchFacets([FacetAction.classify("legal")]),
+  ).rejects.toThrow(/created or retrieved/)
 })
 
 // --- wait: the pendingReprocess trap ----------------------------------------

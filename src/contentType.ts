@@ -14,13 +14,18 @@
  * The taxonomy operations are therefore statics over one `action` helper, and a node is a
  * plain data shape. The name is an interface and a value at once, so `ContentType` reads
  * as both the type of a node and the namespace the operations hang off.
+ *
+ * `FacetAction`/`FacetResult` are the write and result shapes of `file.batchFacets()`.
  */
 
 import type { Query, Transport } from "./client.ts"
-import { AttributeType } from "./enums.ts"
+import { AttributeType, FacetActionType } from "./enums.ts"
 import { compact, type PathRef, path as toPath } from "./utils.ts"
 
 const BASE = "/api/v3/content-types"
+
+/** Actions per `file.batchFacets()` call, the API's cap. Split a longer job yourself. */
+export const MAX_FACET_ACTIONS = 50
 
 /**
  * One attribute of a content type: a definition, or a value set on a file.
@@ -80,6 +85,134 @@ export interface Facet {
   label: string
   /** Attribute values set on the file. */
   attributes: Attribute[]
+}
+
+/**
+ * One classification write, applied by `file.batchFacets()`.
+ *
+ * Build these with the statics: each takes the same arguments in the same order as the
+ * `File` method of the same name, so a batch is a transcription of the single-action
+ * calls it replaces.
+ *
+ * ```ts
+ * await doc.batchFacets([
+ *   FacetAction.classify(nda),
+ *   FacetAction.setAttribute(nda, "jurisdiction", "FR"),
+ * ])
+ * ```
+ *
+ * The constructor is private, which is what pydantic's validator and `extra="forbid"`
+ * do in the Python SDK: an action cannot be built without the fields its verb needs, nor
+ * with a misspelled one. A raw wire body is the escape hatch for a verb the SDK does not
+ * model yet. Nothing is sent until the list reaches a file, so one list applies to many.
+ */
+export class FacetAction {
+  /** The write to perform, the API's verb (see {@link FacetActionType}). */
+  readonly action: FacetActionType
+  /** Content type the action applies to, e.g. `legal:contract:nda`. */
+  readonly contentTypePath: string
+  /** Attribute identifier, snake_case; null except on the value verbs. */
+  readonly attributeName: string | null
+  /** The value `setAttribute` writes; its shape follows the attribute type. */
+  readonly value: unknown
+
+  private constructor(
+    action: FacetActionType,
+    contentType: PathRef,
+    attributeName: string | null = null,
+    value: unknown = null,
+  ) {
+    this.action = action
+    this.contentTypePath = toPath(contentType)
+    this.attributeName = attributeName
+    this.value = value
+  }
+
+  /**
+   * Assign a content type, the batch form of `file.classify()`.
+   *
+   * @param contentType - The content type to assign, or its path.
+   * @returns The action, unsent.
+   */
+  static classify(contentType: PathRef): FacetAction {
+    return new FacetAction(FacetActionType.classify, contentType)
+  }
+
+  /**
+   * Remove a content-type assignment, the batch form of `file.unclassify()`.
+   *
+   * @param contentType - The content type to unassign, or its path.
+   * @returns The action, unsent.
+   */
+  static unclassify(contentType: PathRef): FacetAction {
+    return new FacetAction(FacetActionType.unclassify, contentType)
+  }
+
+  /**
+   * Set an attribute value, the batch form of `file.setAttribute()`.
+   *
+   * @param contentType - The assigned content type, or its path.
+   * @param name - Attribute identifier (snake_case).
+   * @param value - The value; its shape follows the attribute type (string, number,
+   *   date `YYYY-MM-DD`, boolean, or string[] for multi-select).
+   * @returns The action, unsent.
+   */
+  static setAttribute(contentType: PathRef, name: string, value: unknown): FacetAction {
+    return new FacetAction(FacetActionType.setValue, contentType, name, value)
+  }
+
+  /**
+   * Clear an attribute value, the batch form of `file.clearAttribute()`.
+   *
+   * @param contentType - The assigned content type, or its path.
+   * @param name - Attribute identifier to clear.
+   * @returns The action, unsent.
+   */
+  static clearAttribute(contentType: PathRef, name: string): FacetAction {
+    return new FacetAction(FacetActionType.clearValue, contentType, name)
+  }
+}
+
+/**
+ * The one place that knows a facet action's wire names. The single-action methods on
+ * `File` post exactly this too, so single and batch cannot drift.
+ *
+ * @internal
+ */
+export function facetBody(action: FacetAction): Record<string, unknown> {
+  return {
+    action: action.action,
+    content_type_path: action.contentTypePath,
+    ...(action.attributeName === null ? {} : { attribute_name: action.attributeName }),
+    // Sent even when null: the server decides what a null value means.
+    ...(action.action === FacetActionType.setValue
+      ? { value: action.value ?? null }
+      : {}),
+  }
+}
+
+/**
+ * What one action in a `file.batchFacets()` call returned.
+ *
+ * Every result you receive succeeded: the endpoint fails fast, so a failing action
+ * throws (see `LightOnAPIError.index`) and no results come back at all. A returned list is
+ * therefore always complete and in order, so `results[i]` is the outcome of `actions[i]`.
+ */
+export interface FacetResult {
+  /**
+   * Per-action status: 201 created, 200 already applied or updated, 204 for the removals
+   * (`unclassify`, `clearAttribute`).
+   */
+  status: number
+  /**
+   * What the action returned, null for the 204 verbs. `classify` gives
+   * `{ content_type_path, label }`, `setAttribute` gives
+   * `{ name, value, content_type_path, label }`.
+   *
+   * Left as-is, including its wire naming: `data` is an opaque key the camelCase boundary
+   * does not rewrite, because which shape it holds depends on the verb.
+   */
+  data: Record<string, unknown> | null
 }
 
 /** One result of a {@link ContentType.batch} call. */
