@@ -76,7 +76,7 @@ async function askBody(
 ): Promise<Record<string, unknown>> {
   return {
     query,
-    ...(await scopeBody(transport, options)),
+    ...(await scopeBody(transport, query, options)),
     ...compact({
       max_results: options.maxResults,
       relevance_scoring: options.relevanceScoring,
@@ -92,8 +92,9 @@ async function askBody(
  * With `stream: true` this returns an async iterable of {@link AskEvent} instead of the
  * whole answer: `SourcesEvent` once before generation, `TokenEvent` repeatedly, then
  * `DoneEvent`. Being a generator, nothing is sent until you start iterating, so request
- * errors surface on the first step and not at the call. Iterate it fully or `break`, so
- * the connection is released.
+ * errors surface on the first step and not at the call. That includes the lookups the
+ * body needs first: tag names, and the scope request for `scope: true`. Iterate it fully
+ * or `break`, so the connection is released.
  *
  * `stream` composes with `schema`: the tokens then spell out the JSON, so concatenate
  * them and parse at the end.
@@ -104,6 +105,7 @@ async function askBody(
  * @returns The answer, or an async iterable of events when streaming.
  * @throws StreamError - If the server reports a failure mid-stream; the answer is
  *   incomplete at that point.
+ * @throws Error - If `scope` is combined with `contentType`/`attribute`.
  */
 export function ask(
   transport: Transport,

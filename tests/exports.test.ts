@@ -25,6 +25,7 @@ const RUNTIME_EXPORTS = [
   "ContentType",
   "ContentTypeAction",
   "FacetAction",
+  "FacetScope",
   "MAX_CONTENT_TYPE_ACTIONS",
   "MAX_FACET_ACTIONS",
   "BatchIngestJob",

@@ -26,6 +26,7 @@ export interface SearchOptions extends ScopeOptions {
  * @param query - Natural-language search query (max 4000 chars).
  * @param options - Scoping and retrieval knobs. See {@link SearchOptions}.
  * @returns The ranked search results.
+ * @throws Error - If `scope` is combined with `contentType`/`attribute`.
  */
 export async function search(
   transport: Transport,
@@ -34,7 +35,7 @@ export async function search(
 ): Promise<SearchResponse> {
   const body = {
     query,
-    ...(await scopeBody(transport, options)),
+    ...(await scopeBody(transport, query, options)),
     ...compact({
       max_results: options.maxResults,
       mode: options.mode,

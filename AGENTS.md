@@ -164,6 +164,39 @@ Adding a fourth opaque key means adding a test that fails without it.
   naming. No back-reference to the action: results only come back on success, complete and in
   order, so `results[i]` is `actions[i]` by construction.
 
+### Resolving a scope
+
+`ContentType.scope(client, query?, options)` posts `/content-types/scope` and returns a `FacetScope`;
+`ask`/`search` take `scope: FacetScope | boolean`.
+
+- **A `ContentType` static, not a verb.** The URL, the OpenAPI tag and the domain are all content
+  types, and `verbs/` means the primary verbs; scope serves search rather than standing beside it.
+  It cannot reuse `post()`, which injects an `action` field.
+- **Curated shapes, not the generated `FacetScopeResponse`**, because the schema types a hit's
+  `attributes` as free-form objects where the wire sends exactly `Attribute`. `FacetScope` is a
+  class rather than an interface because it carries behavior (`contentTypes`, `filters()`); its
+  constructor takes the camelized response, so the wire's `scopeCompletion` lands on `completion`,
+  the one renamed field (it stutters on a `FacetScope`).
+- **No `ContentTypeRef`.** Python needed a nominal union so a scored hit type-checks wherever a node
+  does; `PathRef` is already structural, so a `ScopedContentType` passes with no new type, and a
+  test calls the real parameters with one so `make type-check` would catch a regression.
+- **`filters()` precedence**: a completion that inferred anything wins outright, then no signal means
+  `{}`, then every scored path. `hasSignal` gates retrieval scores, and vetoing an explicit answer
+  from the model with it would discard the LLM call the caller paid for. Keys are absent rather than
+  empty, and the result is camelCase, so it spreads straight into `search`/`ask` options.
+- **`scope: true` is retrieval-only narrowing**, the same code path as a passed-in `FacetScope`,
+  resolved with no `model`. No string form: `ask` already has a `model` for generation, and two
+  differently-meaning model names in one call is a trap. Known ceiling, documented rather than
+  fixed: `true` resolves at the endpoint's defaults, so it keeps every scored type up to 20, and
+  `maxResults` at resolve time is the lever.
+- **`scopeBody()` in `verbs/scope.ts` is the one place that knows what `scope` means**, shared by
+  `ask` and `search` as tag resolution already was, and it owns the error refusing `scope` alongside
+  an explicit `contentType`/`attribute`. Divergence: Python resolves eagerly, before the streaming
+  generator is returned. Here `ask` must return the generator synchronously, so the scope request
+  goes out on the first iteration, exactly like tag-name resolution already did.
+- **`relevanceScoring` on `scope()` is typed `"none"` only**, since the endpoint accepts nothing
+  else while the shared vocabulary has three members; a runtime throw backs it for JS callers.
+
 ### TypeScript-specific hazards, each hit in practice
 
 - **`static bind` shadows `Function.prototype.bind`**, which every class constructor inherits.

@@ -1,6 +1,6 @@
 import { expect, test } from "vitest"
 import { RelevanceScoring, SearchMode } from "../src/enums.ts"
-import { json, makeClient } from "./helpers.ts"
+import { json, makeClient, RESOLVED_SCOPE, SCOPE } from "./helpers.ts"
 
 const EMPTY = { results: [] }
 
@@ -115,4 +115,60 @@ test("does not list tags when no name needs resolving", async () => {
   })
   await client.search("q", { tags: [1, 2] })
   expect(paths).toEqual(["/api/v3/search"])
+})
+
+// --- scope ------------------------------------------------------------------
+
+/** Every request as `[path, body]`, answering the scope endpoint with `scope`. */
+function recording(scope: unknown = SCOPE) {
+  const seen: [string, unknown][] = []
+  const client = makeClient(async (request) => {
+    const path = new URL(request.url).pathname
+    seen.push([path, await request.json()])
+    return json(path.endsWith("/scope") ? scope : EMPTY)
+  })
+  return { client, seen }
+}
+
+test("scope: true resolves a scope, then narrows the search by it", async () => {
+  const { client, seen } = recording()
+  await client.search("battery cooling", { scope: true })
+  expect(
+    seen.map(([path]) => path),
+    "the scope must be resolved before the search it narrows",
+  ).toEqual(["/api/v3/content-types/scope", "/api/v3/search"])
+  // Resolved from the search's own query, with no model, so no LLM call.
+  expect(seen[0]?.[1]).toEqual({ query: "battery cooling" })
+  expect(seen[1]?.[1]).toEqual({
+    query: "battery cooling",
+    content_type: ["patent:electricity"],
+  })
+})
+
+test("a resolved scope is applied as-is, with no extra request", async () => {
+  const { client, seen } = recording()
+  await client.search("battery cooling", { scope: RESOLVED_SCOPE })
+  expect(seen, "an already-resolved scope must not be resolved again").toHaveLength(1)
+  expect(seen[0]?.[1]).toEqual({
+    query: "battery cooling",
+    content_type: ["patent:electricity"],
+    attribute: ["filing_date:>=2023-01-01"],
+  })
+})
+
+test("a scope without a signal narrows nothing", async () => {
+  const { client, seen } = recording({ ...SCOPE, has_signal: false })
+  await client.search("q", { scope: true })
+  expect(seen[1]?.[1], "same body as a plain search").toEqual({ query: "q" })
+})
+
+test("scope refuses to combine with explicit facet filters", async () => {
+  const { client, seen } = recording()
+  await expect(
+    client.search("q", { scope: true, contentType: ["legal"] }),
+  ).rejects.toThrow(/not both/)
+  await expect(
+    client.search("q", { scope: RESOLVED_SCOPE, attribute: ["status:active"] }),
+  ).rejects.toThrow(/not both/)
+  expect(seen).toHaveLength(0)
 })
