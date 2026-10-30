@@ -10,13 +10,18 @@ export {
   ContentTypeAction,
   type ContentTypeListOptions,
   type ContentTypeResult,
+  type ContentTypeScopeOptions,
   type DefineAttributeOptions,
   type DefineOptions,
   type Facet,
   FacetAction,
   type FacetResult,
+  FacetScope,
   MAX_CONTENT_TYPE_ACTIONS,
   MAX_FACET_ACTIONS,
+  type ScopeCompletion,
+  type ScopedContentType,
+  type ScopeGroup,
   type Template,
 } from "./contentType.ts"
 export {

@@ -10,6 +10,7 @@
  *     make e2e ARGS="--only search --only ask"
  *     make e2e ARGS="--skip batch --keep"
  *     make e2e ARGS="--list-steps"
+ *     make e2e ARGS="--scope-model mistral-large-latest"   # also scope's completion mode
  *
  * Steps run in order and share one workspace. A failing step is reported and the run
  * continues, so one broken feature does not hide the rest. Exit code is 1 if any step
@@ -32,6 +33,7 @@ import {
   DownloadPurpose,
   ExecMode,
   FacetAction,
+  type FacetScope,
   File,
   LightOn,
   LightOnAPIError,
@@ -66,6 +68,8 @@ interface Ctx {
   stamp: string
   askQuery?: string
   searchQuery?: string
+  /** The LLM the `scope_filters` step infers with; its completion mode is skipped without. */
+  scopeModel?: string
   ws?: Workspace & { id: number }
   file?: File & { id: number }
   tag?: Tag & { id: number }
@@ -75,6 +79,10 @@ interface Ctx {
   otherContentType?: ContentType
   /** An `attribute` entry that should match. */
   attributeFilter?: string
+  /** Whether `seedTaxonomy` built this run's tree, so seeded values are known. */
+  seeded?: boolean
+  /** What the `scope` step resolved. */
+  resolvedScope?: FacetScope
   /** Derived once by topic(), cached here. */
   topic?: string
   cleanup: (() => Promise<unknown>)[]
@@ -295,17 +303,34 @@ function sampleValue(attr: Attribute): unknown {
 async function seedTaxonomy(c: Ctx): Promise<ContentType[]> {
   // Codes are lowercase alphanumeric and hyphens, enforced server-side.
   const code = `e2e-${c.stamp}`
-  for (const suffix of ["", "-other"]) {
-    const root = await ContentType.define(
-      c.client,
-      code + suffix,
-      `E2E ${c.stamp}${suffix}`,
-      { description: "SDK e2e run" },
-    )
+  // The labels carry real meaning on purpose: `scope()` ranks the taxonomy against a
+  // question, so a tree labelled "E2E <stamp>" gives the scorer nothing to rank. The two
+  // roots are about different subjects, which is what makes `otherContentType` a real
+  // negative. Codes stay stamped: teardown cascades, so it must only reach this run's.
+  const roots = [
+    [
+      "",
+      "Technical Documentation",
+      "Maintenance manuals, technical orders, service bulletins and incident reports.",
+    ],
+    [
+      "-other",
+      "Financial Statements",
+      "Invoices, balance sheets, quarterly earnings and audit reports.",
+    ],
+  ] as const
+  for (const [suffix, label, description] of roots) {
+    const root = await ContentType.define(c.client, code + suffix, label, {
+      description,
+    })
     c.cleanup.push(() => ContentType.undefine(c.client, root.path))
   }
+  c.seeded = true
 
-  const child = await ContentType.define(c.client, "child", "Child", { parent: code })
+  const child = await ContentType.define(c.client, "child", "Incident Reports", {
+    parent: code,
+    description: "Fault and incident reports filed against equipment.",
+  })
   const attr = await ContentType.defineAttribute(
     c.client,
     code,
@@ -329,7 +354,10 @@ async function seedTaxonomy(c: Ctx): Promise<ContentType[]> {
   )
 
   const results = await ContentType.batch(c.client, [
-    ContentTypeAction.define("batched", "Batched", { parent: code }),
+    ContentTypeAction.define("batched", "Service Bulletins", {
+      parent: code,
+      description: "Manufacturer service bulletins and airworthiness directives.",
+    }),
     // a raw wire body stays a valid entry, the escape hatch both batches share
     {
       action: "define_attribute",
@@ -527,6 +555,234 @@ step(
       `${MAX_FACET_ACTIONS + 1} actions should be refused`,
     )
     say(`over ${MAX_FACET_ACTIONS} actions: refused client-side, no round trip`)
+  },
+)
+
+/**
+ * The bet the curated scope shapes make: hits carry real `Attribute` definitions. The
+ * schema types them as free-form objects, and responses are typed casts, so a wire drift
+ * would land as blank attributes; only asserting on the contents can catch it.
+ */
+function assertAttributeShapes(c: Ctx, resolved: FacetScope): void {
+  const attrs = resolved.contentTypes.flatMap((hit) =>
+    hit.attributes.map((a) => [hit.path, a] as const),
+  )
+  if (attrs.length === 0) {
+    say("no scored type carries attributes, shapes unchecked", "yellow")
+    return
+  }
+  for (const [path, a] of attrs) {
+    assert.ok(a.name, `${path} returned an attribute with no name`)
+    assert.ok(a.type, `${path}.${a.name} came back with no type`)
+    assert.equal(a.value, undefined, `${path}.${a.name} carries a value`)
+  }
+  say(`${attrs.length} attribute definition(s), all named, typed and unvalued`)
+
+  // The seeded select pins `choices` exactly; on a tenant we did not seed there is no
+  // attribute we know the answer for.
+  const select = attrs.find(([, a]) => a.name === "e2e_region")?.[1]
+  if (!c.seeded || !select) {
+    say("the seeded select did not score, choices unchecked", "yellow")
+    return
+  }
+  assert.deepEqual(select.choices, ["FR", "US"], "seeded choices did not survive")
+  say(`seeded select e2e_region kept its choices: ${JSON.stringify(select.choices)}`)
+}
+
+/** `contentTypes` is the flattened `groups`, best score first. */
+function assertGroupCoherence(resolved: FacetScope): void {
+  const flat = resolved.groups.flatMap((g) => g.contentTypes.map((ct) => ct.path))
+  assert.deepEqual(
+    [...flat].sort(),
+    resolved.contentTypes.map((ct) => ct.path).sort(),
+    "contentTypes is not the flattening of groups",
+  )
+  const scores = resolved.contentTypes.map((ct) => ct.score)
+  assert.deepEqual(
+    scores,
+    [...scores].sort((a, b) => b - a),
+    "hits are not best-first",
+  )
+  for (const group of resolved.groups) {
+    if (group.contentTypes.length === 0) continue
+    const best = Math.max(...group.contentTypes.map((ct) => ct.score))
+    assert.ok(
+      Math.abs(group.maxScore - best) < 1e-6,
+      `${group.root}: maxScore ${group.maxScore}, best member ${best}`,
+    )
+    const stray = group.contentTypes.filter((ct) => ct.root !== group.root)
+    assert.equal(stray.length, 0, `${group.root} holds hits rooted elsewhere`)
+  }
+  say(`${resolved.groups.length} group(s) coherent with the flattened hits`)
+}
+
+step(
+  "scope",
+  "ContentType.scope: the three modes, the wire shapes, the knobs",
+  async (c) => {
+    // The offline suite pins the client side, so everything here is a *server* contract:
+    // shapes the curated types bet on, and knobs only the live endpoint can honor.
+    const query = c.searchQuery ?? (await topicOf(c))
+
+    // Prompt mode: no model, so no completion, just the prompt to run yourself.
+    const resolved = await ContentType.scope(c.client, query)
+    c.resolvedScope = resolved
+    const hits = resolved.contentTypes
+    say(
+      `scope(${JSON.stringify(query)}) -> hasSignal=${resolved.hasSignal}, ${hits.length} type(s)`,
+    )
+    assert.equal(resolved.completion, null, "no model was passed, so no completion")
+    if (hits.length === 0) {
+      say("nothing scored, run with --only content_types --only scope", "yellow")
+      return
+    }
+    assert.ok(resolved.promptContext, "prompt mode must return a promptContext")
+    // Not asserted stable across two calls: its data half hashes a live taxonomy.
+    assert.ok(resolved.promptVersion, "prompt mode must return a promptVersion")
+    for (const hit of hits.slice(0, 3)) {
+      say(`  ${hit.score.toFixed(2)}  ${hit.path}  (${hit.docCount} doc(s))`)
+    }
+    assertAttributeShapes(c, resolved)
+    assertGroupCoherence(resolved)
+
+    if (hits.length > 1) {
+      const capped = await ContentType.scope(c.client, query, { maxResults: 1 })
+      assert.ok(capped.contentTypes.length <= 1, "maxResults: 1 was not honored")
+      say(`maxResults 1 -> ${capped.contentTypes.length} hit (from ${hits.length})`)
+    }
+
+    // `threshold: 0` disables the gate; `compact` drops nullish, not falsy, so 0 is sent.
+    const opened = await ContentType.scope(c.client, query, { threshold: 0 })
+    assert.ok(opened.hasSignal, "threshold 0 disables the gate, hasSignal stayed false")
+    const shut = await ContentType.scope(c.client, query, { threshold: 1e9 })
+    assert.ok(!shut.hasSignal, "nothing scores above 1e9, hasSignal should be false")
+    say("threshold: 0 -> signal, 1e9 -> no signal")
+
+    // Catalog mode skips scoring and ignores maxResults while doing it.
+    const catalog = await ContentType.scope(c.client, query, {
+      relevanceScoring: RelevanceScoring.none,
+      maxResults: 1,
+    })
+    assert.ok(catalog.contentTypes.length > 0, "catalog mode returned no content types")
+    assert.ok(
+      catalog.contentTypes.every((ct) => ct.score === 0),
+      "catalog mode should score everything 0",
+    )
+    if (hits.length > 1) {
+      assert.ok(catalog.contentTypes.length > 1, "catalog mode capped at maxResults")
+    }
+    say(`relevanceScoring none -> ${catalog.contentTypes.length} type(s), all score 0`)
+
+    // No query at all: the full schema, what you bake into a system prompt.
+    const everything = await ContentType.scope(c.client)
+    assert.ok(
+      everything.contentTypes.length > 0,
+      "the no-query catalog came back empty",
+    )
+    assert.ok(everything.promptContext, "the no-query catalog carries no promptContext")
+    say(`scope() with no query -> ${everything.contentTypes.length} content type(s)`)
+
+    // The file is classified under contentType, so if it scored the server must count
+    // it. Conditional: a swapped --docs corpus legitimately may not surface it.
+    const ct = c.contentType
+    const scored = ct && hits.find((h) => h.path === ct.path)
+    if (scored) {
+      assert.ok(scored.docCount >= 1, `${scored.path} reports ${scored.docCount} docs`)
+      say(`${scored.path} scored ${scored.score.toFixed(2)}, ${scored.docCount} doc(s)`)
+    }
+  },
+)
+
+step(
+  "scope_filters",
+  "scope on search and ask: apply it, then the refusals (needs the scope step)",
+  async (c) => {
+    const ws = workspaceOf(c)
+    const query = c.searchQuery ?? (await topicOf(c))
+    const resolved = c.resolvedScope
+    const [best] = resolved?.contentTypes ?? []
+    if (!resolved || !best) {
+      say(
+        "no scope resolved, run with --only content_types --only scope --only scope_filters",
+        "yellow",
+      )
+      return
+    }
+
+    // A scored hit carries `path`, so it filters without unwrapping.
+    const got = await c.client.search(query, {
+      workspaces: [ws],
+      contentType: [best],
+      maxResults: 5,
+    })
+    say(`search contentType=[<hit ${best.path}>] -> ${got.results.length} chunk(s)`)
+
+    const loose = await c.client.search(query, {
+      workspaces: [ws],
+      scope: true,
+      maxResults: 5,
+    })
+    say(`search scope=true -> ${loose.results.length} chunk(s)`)
+    const same = await c.client.search(query, {
+      workspaces: [ws],
+      scope: resolved,
+      maxResults: 5,
+    })
+    say(`search scope=<pre-resolved> -> ${same.results.length} chunk(s)`)
+
+    const answered = await c.client.ask(query, {
+      workspaces: [ws],
+      scope: true,
+      maxResults: 5,
+    })
+    assert.ok(answered.answer, "ask with scope=true returned an empty answer")
+    say(`ask scope=true -> ${answered.results.length} source(s)`)
+
+    // scope replaces the explicit filters, it never merges with them.
+    await assert.rejects(
+      () => c.client.search(query, { scope: true, contentType: ["legal"] }),
+      /not both/,
+    )
+    await assert.rejects(
+      () => c.client.search(query, { scope: true, attribute: ["region:FR"] }),
+      /not both/,
+    )
+    say("scope with explicit filters: refused client-side")
+
+    if (!c.scopeModel) {
+      say("completion mode: skipped, pass --scope-model <model> to exercise it")
+      return
+    }
+    // Completion mode: the API runs the LLM and hands back the filters it inferred.
+    const inferred = await ContentType.scope(c.client, query, { model: c.scopeModel })
+    const done = inferred.completion
+    // Also proves the wire sends `scope_completion`, which a fixture cannot.
+    assert.ok(done, "a model must return a completion (wire: scope_completion)")
+    assert.ok(done.rawOutput, "the completion came back with no rawOutput")
+    if (done.warnings.length > 0)
+      say(`  warnings: ${done.warnings.join("; ")}`, "yellow")
+    const narrowed = inferred.filters()
+    say(`scope model=${c.scopeModel} -> ${JSON.stringify(narrowed)}`)
+    // An inferred scope outranks hasSignal: the retrieval gate does not veto the model.
+    if (done.contentType) {
+      assert.deepEqual(narrowed.contentType, [done.contentType], "filters() dropped it")
+    }
+
+    // Not asserting on sources: an inferred filter can legitimately exclude this corpus.
+    const grounded = await c.client.ask(query, {
+      workspaces: [ws],
+      scope: inferred,
+      maxResults: 5,
+    })
+    assert.ok(grounded.answer, "ask with an inferred scope returned an empty answer")
+    say(`ask scope=<inferred> -> ${grounded.results.length} source chunk(s)`)
+
+    const whole = await ContentType.scope(c.client, query, {
+      model: c.scopeModel,
+      relevanceScoring: RelevanceScoring.none,
+    })
+    assert.ok(whole.completion, "catalog plus model must still return a completion")
+    say(`catalog plus model -> ${JSON.stringify(whole.filters())}`)
   },
 )
 
@@ -1032,6 +1288,7 @@ async function main(): Promise<number> {
       docs: { type: "string", default: DOCS_DIR },
       "ask-query": { type: "string" },
       "search-query": { type: "string" },
+      "scope-model": { type: "string" },
       keep: { type: "boolean", default: false },
       "list-steps": { type: "boolean", default: false },
     },
@@ -1094,6 +1351,7 @@ async function main(): Promise<number> {
     stamp,
     ...(values["ask-query"] ? { askQuery: values["ask-query"] } : {}),
     ...(values["search-query"] ? { searchQuery: values["search-query"] } : {}),
+    ...(values["scope-model"] ? { scopeModel: values["scope-model"] } : {}),
     cleanup: [],
   }
 

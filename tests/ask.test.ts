@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest"
 import { StreamError } from "../src/errors.ts"
 import type { AskEvent } from "../src/types/events.ts"
 import { parseSse } from "../src/verbs/ask.ts"
-import { json, makeClient } from "./helpers.ts"
+import { json, makeClient, RESOLVED_SCOPE, SCOPE } from "./helpers.ts"
 
 const ANSWERED = { results: [], answer: "42" }
 
@@ -150,6 +150,82 @@ test("streaming composes with a schema", async () => {
     .map((e) => e.text)
     .join("")
   expect(JSON.parse(text)).toEqual({ a: 1 })
+})
+
+// --- scope ------------------------------------------------------------------
+
+const STREAMED = 'event: token\ndata: {"text":"a"}\n\nevent: done\ndata: {}\n\n'
+
+/** Every request as `[path, body]`, answering the scope endpoint with `scope`. */
+function recording(scope: unknown = SCOPE) {
+  const seen: [string, unknown][] = []
+  const client = makeClient(async (request) => {
+    const path = new URL(request.url).pathname
+    const body = (await request.json()) as Record<string, unknown>
+    seen.push([path, body])
+    if (path.endsWith("/scope")) return json(scope)
+    return body.stream ? sse(STREAMED) : json(ANSWERED)
+  })
+  return { client, seen }
+}
+
+test("scope: true resolves a scope, then narrows the question by it", async () => {
+  const { client, seen } = recording()
+  await client.ask("why did it fail", { scope: true })
+  expect(seen.map(([path]) => path)).toEqual([
+    "/api/v3/content-types/scope",
+    "/api/v3/ask",
+  ])
+  expect(seen[1]?.[1]).toEqual({
+    query: "why did it fail",
+    content_type: ["patent:electricity"],
+  })
+})
+
+test("the scope's model and ask's model are different models", async () => {
+  // The scope's model inferred the filters; `model` here generates the answer.
+  const { client, seen } = recording()
+  await client.ask("q", { scope: RESOLVED_SCOPE, model: "answer-model" })
+  expect(seen).toHaveLength(1)
+  expect(seen[0]?.[1]).toEqual({
+    query: "q",
+    content_type: ["patent:electricity"],
+    attribute: ["filing_date:>=2023-01-01"],
+    model: "answer-model",
+  })
+})
+
+test("scope composes with streaming, resolving on the first step", async () => {
+  // Lazy like tag-name resolution: the generator is returned synchronously, so the scope
+  // request goes out on the first iteration, before the ask it narrows.
+  const { client, seen } = recording()
+  const stream = client.ask("q", { scope: true, stream: true })
+  expect(seen).toHaveLength(0)
+  const events = await collect(stream)
+  expect(seen.map(([path]) => path)).toEqual([
+    "/api/v3/content-types/scope",
+    "/api/v3/ask",
+  ])
+  expect(seen[1]?.[1]).toEqual({
+    query: "q",
+    content_type: ["patent:electricity"],
+    stream: true,
+  })
+  expect(events.map((e) => e.type)).toEqual(["token", "done"])
+})
+
+test("a scope without a signal narrows nothing", async () => {
+  const { client, seen } = recording({ ...SCOPE, has_signal: false })
+  await client.ask("q", { scope: true })
+  expect(seen[1]?.[1], "same body as a plain ask").toEqual({ query: "q" })
+})
+
+test("scope refuses to combine with explicit facet filters", async () => {
+  const { client, seen } = recording()
+  await expect(
+    client.ask("q", { scope: true, contentType: ["legal"] }),
+  ).rejects.toThrow(/not both/)
+  expect(seen).toHaveLength(0)
 })
 
 // --- the SSE parser ---------------------------------------------------------
