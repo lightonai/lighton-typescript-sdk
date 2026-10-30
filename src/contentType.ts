@@ -18,10 +18,19 @@
  * `ContentTypeAction`/`ContentTypeResult` and `FacetAction`/`FacetResult` are the write
  * and result shapes of the two batch endpoints, `ContentType.batch()` and
  * `file.batchFacets()`.
+ *
+ * `FacetScope` is what `ContentType.scope()` resolves: the taxonomy ranked against a
+ * natural-language query, plus the `contentType`/`attribute` filters to narrow a search
+ * with. `ScopeGroup`/`ScopedContentType`/`ScopeCompletion` are its parts.
  */
 
 import type { Query, Transport } from "./client.ts"
-import { AttributeType, ContentTypeActionType, FacetActionType } from "./enums.ts"
+import {
+  AttributeType,
+  ContentTypeActionType,
+  FacetActionType,
+  RelevanceScoring,
+} from "./enums.ts"
 import { compact, type PathRef, path as toPath } from "./utils.ts"
 
 const BASE = "/api/v3/content-types"
@@ -246,6 +255,167 @@ export interface ContentTypeResult {
 
 /** @deprecated Renamed {@link ContentTypeResult}, matching {@link FacetResult}. */
 export type BatchActionResult = ContentTypeResult
+
+/**
+ * One content type scored against a query by {@link ContentType.scope}.
+ *
+ * It carries `path`, so it is accepted anywhere a content type is: `contentType: [hit]`
+ * on `search`/`ask`, `doc.classify(hit)`, `FacetAction.classify(hit)`.
+ */
+export interface ScopedContentType {
+  /** Full taxonomy path, e.g. `legal:contract:nda`. */
+  path: string
+  /** Human-readable label. */
+  label: string
+  /** Path of the tree this node belongs to. */
+  root: string
+  /** Relevance to the query; 0 when scoring was skipped. */
+  score: number
+  /** Chunks matching the query under this type. */
+  chunkCount: number
+  /** Documents classified under this type. */
+  docCount: number
+  /** Attribute definitions on this type; `value` is never set here. */
+  attributes: Attribute[]
+}
+
+/** The scored content types of one taxonomy tree, as `scope()` groups them. */
+export interface ScopeGroup {
+  /** Path of the tree's root node. */
+  root: string
+  /** Human-readable label of the root. */
+  rootLabel: string
+  /** Best score among this group's types. */
+  maxScore: number
+  /** The tree's scored content types. */
+  contentTypes: ScopedContentType[]
+}
+
+/**
+ * The LLM's inferred scope, present only when `scope()` was given a `model`.
+ *
+ * Its `contentType`/`attribute` are already normalized to the paths and filter syntax
+ * `ask`/`search` expect, which is what {@link FacetScope.filters} hands back.
+ */
+export interface ScopeCompletion {
+  /** Inferred content-type path, null when it inferred none. */
+  contentType: string | null
+  /** Inferred attribute filters, e.g. `["filing_date:>=2023-01-01"]`. */
+  attribute: string[]
+  /** The model's unparsed output. */
+  rawOutput: string
+  /** Whether a label had to be mapped onto its attribute name. */
+  normalized: boolean
+  /**
+   * Why inference degraded, empty in the happy path. A failed model call lands here
+   * rather than failing the request.
+   */
+  warnings: string[]
+}
+
+/**
+ * A search scope resolved from a question, what {@link ContentType.scope} returns.
+ *
+ * Pass it to `ask`/`search` as `scope`, or read {@link FacetScope.filters} yourself.
+ */
+export class FacetScope {
+  /** Whether any content type scored above `threshold`. */
+  readonly hasSignal: boolean
+  /** Scored content types, grouped by tree, in the server's order. */
+  readonly groups: readonly ScopeGroup[]
+  /**
+   * LLM-ready description of the matched schema. Feed it to your own model when you
+   * resolve the scope yourself (no `model`).
+   */
+  readonly promptContext: string | null
+  /**
+   * Hash of the prompt template and the data behind it, for reproducing a run. Same value
+   * means the same prompt was built.
+   */
+  readonly promptVersion: string | null
+  /** The LLM's inferred scope; null unless `scope()` got a `model`. */
+  readonly completion: ScopeCompletion | null
+
+  /**
+   * Wrap a scope response. {@link ContentType.scope} does this for you; build one
+   * yourself to reapply a scope you stored.
+   *
+   * @param data - The response, camelCase, as `ContentType.scope()` receives it. The
+   *   wire's `scopeCompletion` lands on `completion`.
+   */
+  constructor(data: {
+    hasSignal: boolean
+    groups: readonly ScopeGroup[]
+    promptContext?: string | null
+    promptVersion?: string | null
+    scopeCompletion?: ScopeCompletion | null
+  }) {
+    this.hasSignal = data.hasSignal
+    this.groups = data.groups
+    this.promptContext = data.promptContext ?? null
+    this.promptVersion = data.promptVersion ?? null
+    this.completion = data.scopeCompletion ?? null
+  }
+
+  /** Every scored content type across the groups, best score first. */
+  get contentTypes(): ScopedContentType[] {
+    return this.groups
+      .flatMap((group) => group.contentTypes)
+      .sort((a, b) => b.score - a.score)
+  }
+
+  /**
+   * The `contentType`/`attribute` filters this scope narrows to.
+   *
+   * Passing the scope itself, `client.search(query, { scope })`, applies these for you;
+   * read them here to see (or log) what a scope would narrow to before spending the
+   * search on it. They spread straight into `search`/`ask` options.
+   *
+   * Precedence:
+   *
+   * 1. A `completion` that inferred anything wins. That is an explicit answer from the
+   *    model, and `hasSignal` (a retrieval-score gate) must not veto it.
+   * 2. Otherwise, no signal means no narrowing, so `{}`.
+   * 3. Otherwise the scored paths, which is retrieval-only narrowing. **Every** scored
+   *    path, not just the best: `threshold` gates `hasSignal` for the whole scope and is
+   *    not echoed per hit, so there is nothing to cut on here. Narrowing to the top few
+   *    is `maxResults: 3` at resolve time. No attribute filters either: inferring those
+   *    needs a `model`.
+   *
+   * @returns `contentType` and/or `attribute`, empty when the scope narrows nothing. A key
+   *   is absent rather than empty, so a missing filter reads the same as one never asked
+   *   for.
+   */
+  filters(): { contentType?: string[]; attribute?: string[] } {
+    const done = this.completion
+    if (done && (done.contentType || done.attribute.length > 0)) {
+      return {
+        ...(done.contentType ? { contentType: [done.contentType] } : {}),
+        ...(done.attribute.length > 0 ? { attribute: [...done.attribute] } : {}),
+      }
+    }
+    if (!this.hasSignal) return {}
+    const paths = this.contentTypes.map((ct) => ct.path)
+    return paths.length > 0 ? { contentType: paths } : {}
+  }
+}
+
+export interface ContentTypeScopeOptions {
+  /** Content types to return (1 to 100; server default 20). */
+  maxResults?: number
+  /** Score above which `hasSignal` goes true (server default 1.8). Pass 0 to disable. */
+  threshold?: number
+  /**
+   * Technical name of the LLM that infers the scope. Omit to get `promptContext` and run
+   * your own. On `ask`, this is a different model from its answer-generation `model`.
+   */
+  model?: string
+  /**
+   * Only `none` is accepted here: skip scoring and return the whole catalog at score 0,
+   * ignoring `maxResults` and `threshold`. Omit for the default scoring.
+   */
+  relevanceScoring?: typeof RelevanceScoring.none
+}
 
 export interface ContentTypeListOptions {
   /** Restrict to the subtree rooted at this path. */
@@ -494,6 +664,55 @@ export const ContentType = {
       }) as Query,
     })
     return data.contentTypes
+  },
+
+  /**
+   * Rank the taxonomy against a question.
+   *
+   * Turns free text into the `contentType`/`attribute` filters `ask` and `search` take,
+   * so a caller does not have to know the taxonomy by heart. Three modes, by option:
+   *
+   * - **prompt** (no `model`): scored content types plus `promptContext`, a ready-made
+   *   prompt for your own LLM. No `completion`.
+   * - **completion** (`model`): the API runs that LLM itself and returns the inferred
+   *   scope in `completion`, attribute filters included.
+   * - **catalog** (`relevanceScoring: "none"`): every content type at score 0. Pair it
+   *   with `model` to infer over the whole taxonomy rather than the query-relevant slice.
+   *
+   * Nothing is stored: this is one stateless inference call.
+   *
+   * @param client - The client to query with.
+   * @param query - The natural-language question (max 2000 chars). Omit it for the full
+   *   schema catalog, which is what you want for a system prompt.
+   * @param options - Result count, signal threshold, model and scoring mode.
+   * @returns The resolved scope. Pass it to `ask`/`search` as `scope`, or read
+   *   `filters()` yourself.
+   * @throws Error - If `relevanceScoring` is anything but `"none"`, which the API rejects
+   *   anyway; caught here to save the round trip.
+   */
+  async scope(
+    client: Transport,
+    query?: string,
+    options: ContentTypeScopeOptions = {},
+  ): Promise<FacetScope> {
+    const scoring = options.relevanceScoring
+    if (scoring !== undefined && scoring !== RelevanceScoring.none) {
+      throw new Error(`scope() only accepts relevanceScoring: "none", got ${scoring}`)
+    }
+    const data = await client.request<ConstructorParameters<typeof FacetScope>[0]>(
+      "POST",
+      `${BASE}/scope`,
+      {
+        json: compact({
+          query,
+          max_results: options.maxResults,
+          threshold: options.threshold,
+          model: options.model,
+          relevance_scoring: scoring,
+        }),
+      },
+    )
+    return new FacetScope(data)
   },
 
   /**

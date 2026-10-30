@@ -309,6 +309,14 @@ The filter grammar:
 
 These are a filter grammar, not field names, so the SDK passes them through exactly as written.
 
+Do not know the paths, or the query came from a user? `scope` derives both filters from the
+question itself (on `ask` too), see
+[Resolving the scope from a question](#resolving-the-scope-from-a-question):
+
+```ts
+const response = await client.search("termination clause", { scope: true })
+```
+
 `relevanceScoring` controls the cross-encoder step:
 
 - `scoringAndFiltering` (the default) scores, then drops chunks below the quality threshold.
@@ -774,6 +782,84 @@ for (const ct of await ContentType.list(client, { includeAttributes: true })) {
 
 `ContentType.list()` returns a **tree**, not a paginated flat list, so each node carries its
 `children`. Narrow it with `path`, `depth` and `query`.
+
+### Resolving the scope from a question
+
+Step 3 above assumes you know your taxonomy by heart. When you do not, or when the query comes from
+a user rather than from you, `ContentType.scope()` reads a question and ranks the taxonomy against
+it, so you get `contentType`/`attribute` filters without hard-coding paths. Pass it a `model` and
+the API runs that LLM for you, returning the filters it inferred:
+
+```ts
+import { ContentType } from "@lighton-ai/sdk"
+
+const scope = await ContentType.scope(
+  client,
+  "rejected electronics patents filed in Q1 2023",
+  { model: "mistral-large-latest" },
+)
+console.log(scope.filters())
+// { contentType: ["patent:electricity"],
+//   attribute: ["decision:Rejected", "filing_date:>=2023-01-01", "filing_date:<=2023-03-31"] }
+
+const answer = await client.ask("why were they rejected", { scope })
+```
+
+`scope` is accepted by both [`ask`](#ask-single-turn-rag) and
+[`search`](#search-retrieval-only-no-generation), and applies the filters for you. It also takes
+`true`, which resolves a scope from that same query with no LLM at all: cheaper (one extra request,
+no generation), and by content type only, since inferring attribute filters is what the model is
+for.
+
+`true` is a loose net, not a precise one: with no `model` to pick a winner, it keeps *every* content
+type the endpoint scored, up to its default of 20, weak matches included, so on a small taxonomy it
+may not narrow much at all. Resolve the scope yourself when you want a tight filter, and pass that:
+
+```ts
+import { ContentType } from "@lighton-ai/sdk"
+
+const top = await ContentType.scope(client, "termination clause", { maxResults: 3 })
+await client.search("termination clause", { scope: top })
+```
+
+Nothing is stored: each call is one stateless inference. What comes back:
+
+| | |
+| --- | --- |
+| `hasSignal` | Whether anything scored above `threshold`. False means narrow nothing. |
+| `contentTypes` | Every scored content type, best first, with its `attributes` definitions. |
+| `groups` | The same hits, kept in the server's per-tree grouping. |
+| `completion` | The model's inferred scope. Null unless you passed `model`. |
+| `promptContext` | An LLM-ready description of the matched schema (see below). |
+| `filters()` | The filters this scope narrows to, `{}` when it narrows nothing. |
+
+Without a `model` you get `promptContext` instead of a `completion`: a ready-made prompt describing
+the matched content types and their attributes, for running against whatever LLM you already have.
+Omit the query too and you get the whole taxonomy, which is what you want in a system prompt:
+
+```ts
+import { ContentType } from "@lighton-ai/sdk"
+
+const catalog = await ContentType.scope(client) // no query: the full schema
+const systemPrompt = `Available document types:\n${catalog.promptContext}`
+```
+
+A scored hit carries `path`, so it goes anywhere a content type does:
+
+```ts
+import { ContentType } from "@lighton-ai/sdk"
+
+const [best] = (await ContentType.scope(client, "mutual NDA expiring 2025")).contentTypes
+if (best) {
+  console.log(best.path, best.score, best.docCount)
+  await client.search("termination clause", { contentType: [best] })
+}
+```
+
+`scope` refuses to combine with an explicit `contentType`/`attribute`: pass the scope or the
+filters, not both, so it is always clear which narrowed the search. On a streaming `ask`, the scope
+request goes out on the first iteration, like tag-name lookups, since the generator is returned
+before anything is sent.
 
 ### Classifying a file
 

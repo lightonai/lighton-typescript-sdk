@@ -2,9 +2,11 @@ import { expect, test } from "vitest"
 import {
   ContentType,
   ContentTypeAction,
+  FacetAction,
+  type FacetScope,
   MAX_CONTENT_TYPE_ACTIONS,
 } from "../src/contentType.ts"
-import { AttributeType } from "../src/enums.ts"
+import { AttributeType, RelevanceScoring } from "../src/enums.ts"
 import { NotFoundError } from "../src/errors.ts"
 import { json, makeClient } from "./helpers.ts"
 
@@ -425,4 +427,276 @@ test("a node can be passed straight to file.classify", async () => {
   const node: ContentType = { path: "legal:contract:nda", code: "nda", label: "NDA" }
   await ActiveRecord.hydrate(File, client, { id: 7 }).classify(node)
   expect(body.content_type_path).toBe("legal:contract:nda")
+})
+
+// --- scope ------------------------------------------------------------------
+
+/** One entry of a scope group's `content_types`, on the wire. */
+function hit(
+  path: string,
+  score: number,
+  root = "patent",
+  attributes: unknown[] = [],
+): Record<string, unknown> {
+  return {
+    path,
+    label: path.split(":").at(-1),
+    root,
+    score,
+    chunk_count: 15,
+    doc_count: 18000,
+    attributes,
+  }
+}
+
+/** A scope response, shaped like the documented examples. */
+function scopePayload(
+  overrides: {
+    has_signal?: boolean
+    groups?: unknown[]
+    scope_completion?: unknown
+  } = {},
+): Record<string, unknown> {
+  return {
+    has_signal: true,
+    groups: [
+      {
+        root: "patent",
+        root_label: "Patent Classification",
+        max_score: 1.85,
+        content_types: [hit("patent:electricity", 1.85)],
+      },
+    ],
+    prompt_context: "Content types (by relevance):\n  1. Electricity",
+    prompt_version: "t:a1b2c3d4.d:e5f6a7b8",
+    scope_completion: null,
+    ...overrides,
+  }
+}
+
+const completion = (contentType: string | null, attribute: string[] = []) => ({
+  content_type: contentType,
+  attribute,
+  raw_output: "",
+  normalized: false,
+  warnings: contentType ? [] : ["model call failed"],
+})
+
+test("scope posts to the scope path and drops what you did not set", async () => {
+  let scope: FacetScope | undefined
+  const { body, url } = await sent(async (c) => {
+    scope = await ContentType.scope(c, "rejected electronics patents")
+  }, scopePayload())
+  expect(new URL(url).pathname).toBe("/api/v3/content-types/scope")
+  expect(body).toEqual({ query: "rejected electronics patents" })
+  expect(scope?.hasSignal).toBe(true)
+  expect(scope?.promptVersion).toBe("t:a1b2c3d4.d:e5f6a7b8")
+})
+
+test("scope sends every knob, and an empty body without one", async () => {
+  const all = await sent(
+    (c) =>
+      ContentType.scope(c, "q", {
+        maxResults: 5,
+        threshold: 0,
+        model: "mistral-large-latest",
+        relevanceScoring: RelevanceScoring.none,
+      }),
+    scopePayload(),
+  )
+  expect(all.body).toEqual({
+    query: "q",
+    max_results: 5,
+    threshold: 0,
+    model: "mistral-large-latest",
+    relevance_scoring: "none",
+  })
+
+  // No query: the full schema catalog.
+  const none = await sent((c) => ContentType.scope(c), scopePayload())
+  expect(none.body).toEqual({})
+})
+
+test("scope parses each hit's attributes as definitions", async () => {
+  const attributes = [
+    {
+      name: "decision",
+      label: "Decision",
+      type: "select",
+      required: false,
+      choices: ["Accepted", "Rejected"],
+    },
+  ]
+  const client = makeClient(() =>
+    json(
+      scopePayload({
+        groups: [
+          {
+            root: "patent",
+            root_label: "Patent",
+            max_score: 1.85,
+            content_types: [hit("patent:electricity", 1.85, "patent", attributes)],
+          },
+        ],
+      }),
+    ),
+  )
+  const scope = await ContentType.scope(client, "q")
+  const [first] = scope.groups[0]?.contentTypes ?? []
+  expect(first?.docCount).toBe(18000)
+  expect(first?.attributes[0]).toMatchObject({
+    name: "decision",
+    type: "select",
+    choices: ["Accepted", "Rejected"],
+  })
+  expect(first?.attributes[0]?.value, "a definition, never a value").toBeUndefined()
+})
+
+test("a scored hit is accepted wherever a content type is", async () => {
+  // Structural: a hit carries `.path`, so it is a PathRef with no extra type. Calling the
+  // real parameters keeps `make type-check` failing if any of them stops accepting one.
+  const { File } = await import("../src/file.ts")
+  const { ActiveRecord } = await import("../src/activeRecord.ts")
+  const bodies: Record<string, unknown>[] = []
+  const client = makeClient(async (request) => {
+    bodies.push((await request.json()) as Record<string, unknown>)
+    if (request.url.endsWith("/scope")) return json(scopePayload())
+    if (request.url.endsWith("/ask")) return json({ answer: "a", results: [] })
+    return json({ results: [] })
+  })
+  const [first] = (await ContentType.scope(client, "q")).contentTypes
+  if (!first) throw new Error("expected a hit")
+
+  await client.search("q", { contentType: [first] })
+  expect(bodies.at(-1)?.content_type).toEqual(["patent:electricity"])
+  await client.ask("q", { contentType: [first] })
+  expect(bodies.at(-1)?.content_type).toEqual(["patent:electricity"])
+  await ActiveRecord.hydrate(File, client, { id: 7 }).classify(first)
+  expect(bodies.at(-1)?.content_type_path).toBe("patent:electricity")
+  expect(FacetAction.classify(first).contentTypePath).toBe("patent:electricity")
+})
+
+test("a completion lands on `completion` and drives the filters", async () => {
+  const client = makeClient(() =>
+    json(
+      scopePayload({
+        scope_completion: completion("patent:electricity", [
+          "filing_date:>=2023-01-01",
+          "filing_date:<=2023-03-31",
+        ]),
+      }),
+    ),
+  )
+  const scope = await ContentType.scope(client, "q", { model: "mistral-large-latest" })
+  expect(scope.completion?.contentType).toBe("patent:electricity")
+  expect(scope.filters()).toEqual({
+    contentType: ["patent:electricity"],
+    attribute: ["filing_date:>=2023-01-01", "filing_date:<=2023-03-31"],
+  })
+})
+
+test("filters falls back to the scored paths without a completion", async () => {
+  const client = makeClient(() =>
+    json(
+      scopePayload({
+        groups: [
+          {
+            root: "patent",
+            root_label: "Patent",
+            max_score: 1.85,
+            content_types: [
+              hit("patent:electricity", 1.85),
+              hit("patent:chemistry", 1.2),
+            ],
+          },
+        ],
+      }),
+    ),
+  )
+  const scope = await ContentType.scope(client, "q")
+  expect(scope.completion).toBeNull()
+  // Retrieval-only narrowing: content types, never attributes.
+  expect(scope.filters()).toEqual({
+    contentType: ["patent:electricity", "patent:chemistry"],
+  })
+})
+
+test("filters narrows nothing without a signal", async () => {
+  const client = makeClient(() => json(scopePayload({ has_signal: false })))
+  expect((await ContentType.scope(client, "q")).filters()).toEqual({})
+})
+
+test("filters narrows nothing when a signal scored no paths", async () => {
+  // No key at all rather than `contentType: []`.
+  const client = makeClient(() => json(scopePayload({ groups: [] })))
+  expect((await ContentType.scope(client, "q")).filters()).toEqual({})
+})
+
+test("a completion outranks a missing signal", async () => {
+  // `hasSignal` gates the retrieval scores, not an explicit answer from the model.
+  const client = makeClient(() =>
+    json(
+      scopePayload({
+        has_signal: false,
+        scope_completion: completion("patent:electricity"),
+      }),
+    ),
+  )
+  const scope = await ContentType.scope(client, "q", { model: "m" })
+  expect(scope.filters()).toEqual({ contentType: ["patent:electricity"] })
+})
+
+test("an empty completion falls through to the scores", async () => {
+  const client = makeClient(() =>
+    json(scopePayload({ scope_completion: completion(null) })),
+  )
+  const scope = await ContentType.scope(client, "q", { model: "m" })
+  expect(scope.completion?.warnings).toEqual(["model call failed"])
+  expect(scope.filters()).toEqual({ contentType: ["patent:electricity"] })
+})
+
+test("contentTypes is flattened across groups and score-ordered", async () => {
+  const client = makeClient(() =>
+    json(
+      scopePayload({
+        groups: [
+          {
+            root: "patent",
+            root_label: "Patent",
+            max_score: 1.2,
+            content_types: [hit("patent:chemistry", 1.2)],
+          },
+          {
+            root: "legal",
+            root_label: "Legal",
+            max_score: 1.9,
+            content_types: [
+              hit("legal:nda", 1.9, "legal"),
+              hit("legal:msa", 1.5, "legal"),
+            ],
+          },
+        ],
+      }),
+    ),
+  )
+  const scope = await ContentType.scope(client, "q")
+  expect(scope.contentTypes.map((ct) => ct.path)).toEqual([
+    "legal:nda",
+    "legal:msa",
+    "patent:chemistry",
+  ])
+  // Groups keep the server's order, untouched.
+  expect(scope.groups.map((g) => g.root)).toEqual(["patent", "legal"])
+})
+
+test("scope refuses a relevanceScoring the endpoint rejects", async () => {
+  const client = makeClient((request) => {
+    throw new Error(`no request should be made, got ${request.url}`)
+  })
+  await expect(
+    ContentType.scope(client, "q", {
+      // @ts-expect-error only `none` is accepted here, which the type says too
+      relevanceScoring: RelevanceScoring.scoringOnly,
+    }),
+  ).rejects.toThrow(/relevanceScoring: "none"/)
 })
