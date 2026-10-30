@@ -394,13 +394,29 @@ for (const w of await Workspace.list(client)) {
 }
 ```
 
-Two things worth knowing:
+A few things worth knowing:
 
 - `userRole` arrives as `""` when you hold no role on the workspace. The SDK reads that as `null`
   rather than widening the type to include a meaningless empty string.
 - **Only `list()` returns `taxonomy`.** The detail endpoint omits the key entirely, so `get()` and
   `refresh()` neither populate it nor clear an already-loaded value. Re-list for fresh coverage
   numbers.
+- **Only `get()` and `refresh()` return `userPermissions`**, the reverse of `taxonomy`. It says what
+  *you* may do there, a workspace-scoped API key's limits included, so check it before an upload
+  instead of catching a 403 (see below).
+- On a synced workspace, `sync.credentialsRejected` means syncing has stopped until someone replaces
+  the credentials. For SMB shares, `sync.walk` reports the directory walk's progress: read
+  `walk.complete` rather than `lastStatus`, which says `success` after every batch of a scan that
+  can take days.
+
+```ts
+import { File, Workspace } from "@lighton-ai/sdk"
+
+const target = await Workspace.get(client, 7)
+if (target.userPermissions?.canUploadFiles) {
+  await target.ingest(new File({ path: "report.pdf" }))
+}
+```
 
 ## Files & ingestion
 

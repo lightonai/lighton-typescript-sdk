@@ -108,6 +108,8 @@ export type {
 } from "./types/index.ts"
 export type {
   RootContentType,
+  SyncWalk,
+  WorkspacePermissions,
   WorkspaceSync,
   WorkspaceTaxonomy,
 } from "./types/workspace.ts"
