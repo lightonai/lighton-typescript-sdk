@@ -156,6 +156,12 @@ Recorded so they are deliberate rather than forgotten.
   schema reaches the API, which answers with a 422. There is no lightweight equivalent worth a
   runtime dependency; if it becomes a support cost, `ajv` could follow the Zod pattern as an
   optional peer dependency, imported only when present.
+- **Endpoints left unwrapped, as in the Python SDK.** `POST /api/v3/preview` (document to PDF) is
+  internal tooling; `request(..., { raw: true })` reaches it in one line. Also `scoped_api_keys` on
+  workspace responses, the whole datasource surface (`browse`/`test`, the alpha
+  `PATCH /workspaces/{id}/datasource` and `GET .../datasource/refusals`), since the SDK creates no
+  synced workspaces and only reads `sync`, and `/billing/budget*`. Wrap the datasource writes when a
+  caller needs to rotate credentials (`sync.credentialsRejected` is the trigger), not before.
 
 ## Serialization
 
