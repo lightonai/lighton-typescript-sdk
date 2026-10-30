@@ -40,6 +40,7 @@ export {
 } from "./enums.ts"
 export {
   AuthenticationError,
+  type FieldError,
   fromResponse,
   LightOnAPIError,
   LightOnConnectionError,
