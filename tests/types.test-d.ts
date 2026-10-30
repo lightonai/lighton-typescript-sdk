@@ -6,7 +6,7 @@
  */
 
 import { expectTypeOf, test } from "vitest"
-import { FacetAction } from "../src/contentType.ts"
+import { ContentTypeAction, FacetAction } from "../src/contentType.ts"
 import type {
   AskResultItem,
   ExtractJobResponse,
@@ -41,6 +41,12 @@ test("a FacetAction is only built through its statics", () => {
   // could drop `attributeName` from a value verb, or misspell a field.
   // @ts-expect-error the constructor is private
   expectTypeOf(new FacetAction("set_value", "legal")).not.toBeNever()
+})
+
+test("a ContentTypeAction is only built through its statics", () => {
+  // Same reason: a `define` without its `label`, or a misspelled field, cannot be built.
+  // @ts-expect-error the constructor is private
+  expectTypeOf(new ContentTypeAction({ action: "define_content_type" })).not.toBeNever()
 })
 
 test("optionality survives the rewrite", () => {

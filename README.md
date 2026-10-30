@@ -894,31 +894,37 @@ A `code` is lowercase alphanumeric with hyphens (`audit-report`), and an attribu
 snake_case. `choices` is required for `select` and `multi-select`, and the SDK throws client-side
 rather than spending a round trip on the API's 422.
 
-Several actions in one request:
+Building a tree is several calls, so `batch()` sends up to 50 of them in a **single request**.
+Build the list with `ContentTypeAction`, whose statics take the same arguments as the operations
+above, so a batch is a transcription of the calls it replaces:
 
 ```ts
-import { ContentType } from "@lighton-ai/sdk"
+import { AttributeType, ContentType, ContentTypeAction } from "@lighton-ai/sdk"
 
 const results = await ContentType.batch(client, [
-  { action: "adopt", content_types: ["legal"] },
-  {
-    action: "define_attribute",
-    content_type_path: "legal",
-    name: "jurisdiction",
-    attribute_type: "select",
+  ContentTypeAction.adopt(["legal"]),
+  ContentTypeAction.define("compliance", "Compliance"),
+  ContentTypeAction.define("audit-report", "Audit Report", { parent: "compliance" }),
+  ContentTypeAction.defineAttribute("legal", "jurisdiction", AttributeType.select, {
     choices: ["FR", "US"],
-  },
+  }),
 ])
-console.log(results.map((r) => r.status)) // [201, 201]
+console.log(results.map((r) => r.status)) // [201, 201, 201, 201]
 ```
 
-Batch entries are wire bodies, so their keys are the server's rather than the SDK's, and each
-result's `data` is handed back untouched, because which shape it holds depends on the action.
+You get one `ContentTypeResult` per action, in the order sent, so `results[i]` belongs to
+`actions[i]`. Each carries a `status` (201 created, 200 already applied) and `data`, which is null
+for the 204 removals (`undefine`, `undefineAttribute`) and otherwise a node for the content-type
+verbs or a definition for the attribute ones, handed back untouched in the server's own naming.
 
-This is the taxonomy-side sibling of [`batchFacets()`](#many-writes-in-one-request). The entries
-stay wire bodies here because the taxonomy spans five different action shapes (`adopt` takes a path
-list, `define_content_type` code/label/parent, `define_attribute` seven fields), whereas a file facet
-action has exactly one shape, which is what `FacetAction` models.
+The list is inert until it reaches `batch()`, so the same one seeds many tenants. The failure rules
+are the taxonomy-side copy of [`batchFacets()`](#many-writes-in-one-request): not transactional, a
+domain error stops at that action and leaves the ones before it applied, the thrown
+`LightOnAPIError` carries the 0-based position on `.index`, and every action is idempotent, so the
+fix is to correct that one and resend the whole list. Empty is a local no-op, and past 50 actions
+`batch()` throws before the request goes out.
+
+A raw wire body still works as an entry, for a verb the SDK does not model yet.
 
 ## API keys
 

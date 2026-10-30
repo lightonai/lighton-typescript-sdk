@@ -1,6 +1,11 @@
 import { expect, test } from "vitest"
-import { ContentType } from "../src/contentType.ts"
+import {
+  ContentType,
+  ContentTypeAction,
+  MAX_CONTENT_TYPE_ACTIONS,
+} from "../src/contentType.ts"
 import { AttributeType } from "../src/enums.ts"
+import { NotFoundError } from "../src/errors.ts"
 import { json, makeClient } from "./helpers.ts"
 
 const TREE = {
@@ -169,7 +174,54 @@ test("a select without choices is rejected client-side, saving a round trip", as
       choices: [],
     }),
   ).rejects.toThrow(/multi-select needs choices/)
+  // The canonical strings too, which the members are. The API's aliases (`multiselect`)
+  // are deliberately not matched: they reach its 422.
+  for (const kind of ["select", "multi-select"]) {
+    await expect(
+      ContentType.defineAttribute(client, "legal", "x", kind),
+    ).rejects.toThrow(/needs choices/)
+  }
+  // The batch form refuses it too, at build time.
+  expect(() =>
+    ContentTypeAction.defineAttribute("legal", "x", AttributeType.select),
+  ).toThrow(/select needs choices/)
   expect(calls).toBe(0)
+})
+
+test("a false flag is sent, not dropped", async () => {
+  // False is a value, not unset. Dropped, the server would apply its default of true and
+  // silently inherit attributes the caller asked it not to; and it would vanish from the
+  // batch path identically, so the single-equals-batch test alone would stay green.
+  const define = await sent((c) =>
+    ContentType.define(c, "x", "X", { inheritAttributes: false }),
+  )
+  expect(define.body.inherit_attributes).toBe(false)
+
+  const attribute = await sent((c) =>
+    ContentType.defineAttribute(c, "legal", "region", AttributeType.text, {
+      required: false,
+    }),
+  )
+  expect(attribute.body.required).toBe(false)
+
+  const batch = await sent(
+    (c) =>
+      ContentType.batch(c, [
+        ContentTypeAction.define("x", "X", { inheritAttributes: false }),
+        ContentTypeAction.defineAttribute("legal", "region", AttributeType.text, {
+          required: false,
+        }),
+      ]),
+    {
+      results: [
+        { status: 201, data: null },
+        { status: 201, data: null },
+      ],
+    },
+  )
+  const [first, second] = batch.body.actions as Record<string, unknown>[]
+  expect(first?.inherit_attributes).toBe(false)
+  expect(second?.required).toBe(false)
 })
 
 test("other attribute types need no choices", async () => {
@@ -193,23 +245,149 @@ test("undefineAttribute removes one column", async () => {
 
 // --- batch ------------------------------------------------------------------
 
-test("batch sends the actions in order and returns one result each", async () => {
-  const { body, url } = await sent(
-    (c) =>
-      ContentType.batch(c, [
-        { action: "adopt", content_types: ["legal"] },
-        {
-          action: "define_attribute",
-          content_type_path: "legal",
-          name: "jurisdiction",
-          attribute_type: "select",
-          choices: ["FR", "US"],
-        },
-      ]),
-    { results: [{ status: 201 }, { status: 201 }] },
+const noRequest = (request: Request): Response => {
+  throw new Error(`no request should be made, got ${request.url}`)
+}
+
+/** `count` results of one status, the shape a successful batch answers with. */
+const ok = (count: number, status = 200) => ({
+  results: Array(count).fill({ status, data: null }),
+})
+
+test("batch posts every action in one request", async () => {
+  const requests: { path: string; body: unknown }[] = []
+  const client = makeClient(async (request) => {
+    requests.push({ path: new URL(request.url).pathname, body: await request.json() })
+    return json(ok(2, 201))
+  })
+  await ContentType.batch(client, [
+    ContentTypeAction.adopt(["legal"]),
+    ContentTypeAction.defineAttribute("legal", "flag", AttributeType.boolean),
+  ])
+  expect(requests, "a batch must be exactly one round trip").toHaveLength(1)
+  expect(requests[0]?.path).toBe("/api/v3/content-types/batch")
+  expect(requests[0]?.body).toEqual({
+    actions: [
+      { action: "adopt", content_types: ["legal"] },
+      {
+        action: "define_attribute",
+        content_type_path: "legal",
+        name: "flag",
+        attribute_type: "boolean",
+      },
+    ],
+  })
+})
+
+test("batch sends the same bodies as the single-action methods", async () => {
+  // One wire encoder behind both paths, so they cannot drift apart.
+  const single: unknown[] = []
+  const batched: unknown[] = []
+  const client = makeClient(async (request) => {
+    const body = (await request.json()) as { actions?: unknown[] }
+    if (request.url.endsWith("/batch")) {
+      batched.push(...(body.actions ?? []))
+      return json(ok(5))
+    }
+    single.push(body)
+    return json({ content_types: [] })
+  })
+  await ContentType.adopt(client, ["legal"])
+  await ContentType.define(client, "nda", "NDA", {
+    parent: "legal",
+    inheritAttributes: false,
+  })
+  await ContentType.defineAttribute(client, "legal", "region", AttributeType.select, {
+    choices: ["FR"],
+    required: false,
+  })
+  await ContentType.undefineAttribute(client, "legal", "region")
+  await ContentType.undefine(client, "legal")
+  await ContentType.batch(client, [
+    ContentTypeAction.adopt(["legal"]),
+    ContentTypeAction.define("nda", "NDA", {
+      parent: "legal",
+      inheritAttributes: false,
+    }),
+    ContentTypeAction.defineAttribute("legal", "region", AttributeType.select, {
+      choices: ["FR"],
+      required: false,
+    }),
+    ContentTypeAction.undefineAttribute("legal", "region"),
+    ContentTypeAction.undefine("legal"),
+  ])
+  expect(single).toEqual(batched)
+})
+
+test("batch returns one result per action, in order", async () => {
+  const client = makeClient(() =>
+    json({
+      results: [
+        { status: 201, data: { path: "compliance" } },
+        { status: 204, data: null },
+        { status: 200, data: { name: "owner", type: "text" } },
+      ],
+    }),
   )
-  expect(url).toContain("/api/v3/content-types/batch")
-  expect((body.actions as unknown[]).length).toBe(2)
+  const results = await ContentType.batch(client, [
+    ContentTypeAction.define("compliance", "Compliance"),
+    ContentTypeAction.undefineAttribute("compliance", "stale"),
+    ContentTypeAction.defineAttribute("compliance", "owner", AttributeType.text),
+  ])
+  expect(results.map((r) => r.status)).toEqual([201, 204, 200])
+  expect(results[1]?.data, "the 204 verbs carry no data").toBeNull()
+  expect(results[2]?.data).toEqual({ name: "owner", type: "text" })
+})
+
+test("batch refuses more than fifty actions, and accepts fifty", async () => {
+  const action = ContentTypeAction.undefine("legal")
+  await expect(
+    ContentType.batch(
+      makeClient(noRequest),
+      Array(MAX_CONTENT_TYPE_ACTIONS + 1).fill(action),
+    ),
+  ).rejects.toThrow(/at most 50/)
+
+  // The boundary itself is accepted: an off-by-one is the plausible bug here.
+  const client = makeClient(() => json(ok(MAX_CONTENT_TYPE_ACTIONS, 204)))
+  const results = await ContentType.batch(
+    client,
+    Array(MAX_CONTENT_TYPE_ACTIONS).fill(action),
+  )
+  expect(results).toHaveLength(MAX_CONTENT_TYPE_ACTIONS)
+})
+
+test("batch on an empty list is a local no-op", async () => {
+  expect(await ContentType.batch(makeClient(noRequest), [])).toEqual([])
+})
+
+test("batch passes raw action bodies through untouched", async () => {
+  const raw = { action: "some_future_verb", content_type_path: "legal", extra: 1 }
+  const { body } = await sent(
+    (c) => ContentType.batch(c, [ContentTypeAction.undefine("legal"), raw]),
+    ok(2),
+  )
+  expect(
+    (body.actions as unknown[])[1],
+    "a raw body must reach the wire untouched",
+  ).toEqual(raw)
+})
+
+test("batch reports the failing action's index on the status-mapped error", async () => {
+  // `index` rides on the usual class, so `instanceof NotFoundError` still works.
+  const client = makeClient(() => json({ detail: "unknown parent", index: 1 }, 404))
+  const actions = [
+    ContentTypeAction.define("compliance", "Compliance"),
+    ContentTypeAction.define("audit", "Audit", { parent: "nope:not-a-type" }),
+  ]
+  const error = (await ContentType.batch(client, actions).catch(
+    (e: unknown) => e,
+  )) as NotFoundError
+  expect(error).toBeInstanceOf(NotFoundError)
+  expect(error.index).toBe(1)
+  expect(error.message, "the position belongs in the message too").toContain("action 1")
+  // Which is what makes the offender addressable; the prefix is already applied.
+  expect(actions[error.index ?? -1]?.parentPath).toBe("nope:not-a-type")
 })
 
 test("batch results keep their payload in the server's own naming", async () => {

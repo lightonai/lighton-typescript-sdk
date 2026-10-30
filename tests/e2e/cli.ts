@@ -28,12 +28,14 @@ import {
   type Attribute,
   AttributeType,
   ContentType,
+  ContentTypeAction,
   DownloadPurpose,
   ExecMode,
   FacetAction,
   File,
   LightOn,
   LightOnAPIError,
+  MAX_CONTENT_TYPE_ACTIONS,
   MAX_FACET_ACTIONS,
   NotFoundError,
   RelevanceScoring,
@@ -327,12 +329,8 @@ async function seedTaxonomy(c: Ctx): Promise<ContentType[]> {
   )
 
   const results = await ContentType.batch(c.client, [
-    {
-      action: "define_content_type",
-      parent_path: code,
-      code: "batched",
-      label: "Batched",
-    },
+    ContentTypeAction.define("batched", "Batched", { parent: code }),
+    // a raw wire body stays a valid entry, the escape hatch both batches share
     {
       action: "define_attribute",
       content_type_path: code,
@@ -344,9 +342,33 @@ async function seedTaxonomy(c: Ctx): Promise<ContentType[]> {
     results.every((r) => r.status < 300),
     `batch failed: ${JSON.stringify(results)}`,
   )
-  const batched = (results[1]?.data as { name?: string } | undefined)?.name
+  const batched = results[1]?.data
+  assert.ok(batched, "define_attribute returns the definition")
   say(
-    `defined ${code} (+child, +batched), attributes ${attr.name}/${select.name}/${batched}`,
+    `defined ${code} (+child, +batched), attributes ${attr.name}/${select.name}/${batched.name}`,
+  )
+
+  const failed = await ContentType.batch(c.client, [
+    ContentTypeAction.undefine("nope:not-a-type"),
+  ]).then(
+    () => null,
+    (e: unknown) => e,
+  )
+  assert.ok(
+    failed instanceof LightOnAPIError,
+    "an unknown content type should have failed the batch",
+  )
+  assert.equal(failed.index, 0, `the failing action's position should be 0`)
+
+  assert.deepEqual(await ContentType.batch(c.client, []), [], "empty should be a no-op")
+  await assert.rejects(
+    () =>
+      ContentType.batch(
+        c.client,
+        Array(MAX_CONTENT_TYPE_ACTIONS + 1).fill(ContentTypeAction.undefine(code)),
+      ),
+    /at most/,
+    "past the cap the batch should have been refused",
   )
   return ContentType.list(c.client, { includeAttributes: true })
 }

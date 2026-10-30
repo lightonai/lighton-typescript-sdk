@@ -122,34 +122,47 @@ Adding a fourth opaque key means adding a test that fails without it.
 
 ### Batch writes
 
-`file.batchFacets(actions)` posts up to 50 classification writes to `/files/{id}/facets/batch`.
+`file.batchFacets(actions)` (`/files/{id}/facets/batch`) and `ContentType.batch(client, actions)`
+(`/content-types/batch`), max 50 each, take `FacetAction`/`ContentTypeAction` and return
+`FacetResult`/`ContentTypeResult`. Symmetric on purpose.
 
-- **Typed both ways, unlike `ContentType.batch`.** A file-facet action has exactly one shape (four
-  fields, four verbs), which `FacetAction` models cleanly; a taxonomy action spans five shapes. Raw
-  wire bodies are still accepted alongside `FacetAction`, so the escape hatch is what the two share.
-- **`FacetAction` is a class with a private constructor**, built only through its statics. That is
-  the port of pydantic's validator plus `extra="forbid"`: a value verb cannot be built without its
-  attribute name, nor a field misspelled, and both are compile errors rather than runtime checks
-  (a type test pins it). Being a class is also what lets `instanceof` tell it apart from a raw body.
-- **Naming split.** The statics carry the SDK's method names (`setAttribute`/`clearAttribute`) so a
-  batch is a transcription of the one-by-one calls; `FacetActionType` and the wire carry the API's
-  (`set_value`/`clear_value`). `batchFacets`, not `batch`, because `Workspace` and `batch.ts` already
-  own a batch *ingest* concept.
-- **One wire encoder.** `facetBody()` is the only place that knows the body field names, and the four
-  single-action methods post it too, so they cannot drift from the batch; a test pins single bodies
-  equal to batch bodies. `value` is sent as null rather than dropped, matching the Python SDK.
-- **The cap throws client-side, and is not chunked.** Empty is a local no-op. Chunking would scatter
-  the fail-fast boundary (the reported `index` would be relative to a batch the caller never wrote)
-  and forfeit the single reindex that is the whole reason the endpoint exists.
-- **Partial commit, unlike `deleteMany`.** The endpoint commits the prefix before a failure and does
+- **Both are typed both ways.** The taxonomy side once stayed raw wire bodies, on the grounds that a
+  taxonomy action spans five shapes where a facet action has one. That was reversed, following the
+  Python SDK: the API itself models the five as one wide class plus a per-action contract
+  (`ContentTypeActionRequest`), so `ContentTypeAction` is one wide shape whose field docs name the
+  verbs each belongs to. Raw wire bodies are still accepted alongside both, so the escape hatch is
+  what the two share. Unlike Python, the change is not breaking here: TS results were already
+  objects, and `BatchActionResult` survives as a deprecated alias of `ContentTypeResult`.
+- **Action classes have a private constructor**, built only through their statics. That is the port
+  of pydantic's validators plus `extra="forbid"`: a value verb cannot be built without its attribute
+  name, a `define` without its label, nor a field misspelled, all compile errors rather than runtime
+  checks (type tests pin both). Being classes is also what lets `instanceof` tell them from a raw
+  body. `ContentTypeAction` uses `declare` fields plus one `Object.assign`, so an action carries
+  only its own verb's keys. The one runtime check left is `select` without `choices`, now in
+  `ContentTypeAction.defineAttribute`, so the single and batch paths both refuse it.
+- **Naming split, on both sides.** The statics carry the SDK's method names (`setAttribute`,
+  `define`/`undefine`) so a batch is a transcription of the one-by-one calls; `FacetActionType`,
+  `ContentTypeActionType` and the wire carry the API's (`set_value`, `define_content_type`).
+  `batchFacets`, not `batch`, because `Workspace` and `batch.ts` already own a batch *ingest*
+  concept; on `ContentType` the name is free.
+- **One wire encoder per surface.** `facetBody()`/`contentTypeBody()` are the only places that know
+  the body field names, and the single-action methods post them too, so they cannot drift from the
+  batch; a test on each side pins single bodies equal to batch bodies. `facetBody` sends `value` as
+  null rather than dropping it; `contentTypeBody` is `compact()`, which drops what is unset and keeps
+  `false`, pinned by its own test since the equality test cannot see a drop that hits both paths.
+  Two cap constants, not one shared 50: they are two endpoints' caps.
+- **The caps throw client-side, and neither is chunked.** Empty is a local no-op. Chunking would
+  scatter the fail-fast boundary (the reported `index` would be relative to a batch the caller never
+  wrote) and, on the facet side, forfeit the single reindex that is the reason the endpoint exists.
+- **Partial commit, unlike `deleteMany`.** Both endpoints commit the prefix before a failure and do
   not return those results, so the *position* is the payload: `LightOnAPIError.index`, parsed in the
   base constructor so every subclass inherits it, and appended to the message (`(action 3)`). Not a
   `BatchActionError` subclass, because the API sends `index` on 400/403/404/422 alike, and a
   body-keyed class would break `instanceof NotFoundError` for batch callers; `MaintenanceError`
   stays the one body-keyed mapping. `Number.isInteger`, not truthiness, since index 0 is real.
-- **`FacetResult` is curated, its `data` opaque.** It differs per verb, so it keeps the server's
-  naming like `ContentType.batch` results. No back-reference to the action: results only come back
-  on success, complete and in order, so `results[i]` is `actions[i]` by construction.
+- **Results are curated, their `data` opaque.** It differs per verb, so it keeps the server's
+  naming. No back-reference to the action: results only come back on success, complete and in
+  order, so `results[i]` is `actions[i]` by construction.
 
 ### TypeScript-specific hazards, each hit in practice
 
