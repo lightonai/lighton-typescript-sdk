@@ -336,6 +336,19 @@ for (const page of doc.result.pages) {
 }
 ```
 
+Pass `grounding: true` to also get each page's **layout**: `page.blocks`, in reading order, each with
+a `type` (`title`, `text`, `table`, `chart`, `image`, ...), a bounding box on a 0-1000 grid of the
+page (origin top-left), and its `content`. Charts come back as HTML tables of their data and images
+as short descriptions. It works in both modes, and more than doubles the response, since every
+page's text rides in `markdown` *and* its blocks.
+
+```ts
+const grounded = await client.parse({ file: "report.pdf", grounding: true })
+for (const block of grounded.result.pages[0]?.blocks ?? []) {
+  console.log(block.type, [block.topLeftX, block.topLeftY], block.content.slice(0, 40))
+}
+```
+
 ### `extract`: schema-guided structured data
 
 Pass exactly one of `file`, `url` or `ingested`.

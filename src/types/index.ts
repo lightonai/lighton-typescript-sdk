@@ -29,6 +29,8 @@ export type SearchResultItem = Camelize<Schemas["SearchResultItem"]>
  * without reshaping. Never redefine this shape per app.
  */
 export type Page = Camelize<Schemas["Page"]>
+/** One layout element of a grounded page, see `parse({ grounding: true })`. */
+export type PageBlock = Camelize<Schemas["PageBlock"]>
 
 /** A completed synchronous `parse`. */
 export type ParseResponse = Camelize<Schemas["ParseResponse"]>

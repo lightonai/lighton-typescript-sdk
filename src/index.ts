@@ -96,6 +96,7 @@ export type {
   FileFilters,
   JobProgress,
   Page,
+  PageBlock,
   ParseDocument,
   ParseError,
   ParseResponse,
