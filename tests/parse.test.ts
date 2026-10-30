@@ -164,3 +164,49 @@ test("a job that ends without succeeding throws, carrying the error block", asyn
   const job = await client.parse({ url: "https://x/a.pdf", mode: ExecMode.async })
   await expect(job.wait({ pollMs: 0 })).rejects.toThrow(/unreadable scan/)
 })
+
+test("grounding sends the option and returns page blocks", async () => {
+  const sent: Request[] = []
+  const block = {
+    type: "title",
+    top_left_x: 100,
+    top_left_y: 50,
+    bottom_right_x: 900,
+    bottom_right_y: 90,
+    content: "# Report",
+  }
+  const client = makeClient((request) => {
+    sent.push(request)
+    return json({
+      ...PARSED,
+      result: { pages: [{ index: 1, markdown: "# Report", blocks: [block] }] },
+    })
+  })
+
+  const doc = await client.parse({ url: "https://example.com/d.pdf", grounding: true })
+  expect(await sent[0]?.json()).toEqual({
+    document: "https://example.com/d.pdf",
+    options: { grounding: true },
+  })
+  const [page] = doc.result.pages
+  expect(page?.blocks?.[0]?.type).toBe("title")
+  expect(page?.blocks?.[0]?.bottomRightX).toBe(900)
+
+  // multipart: same options, JSON-encoded as a form field, composed with async
+  await client.parse({ file: pdfPath, grounding: true, mode: ExecMode.async })
+  const form = await sent[1]?.formData()
+  expect(JSON.parse(String(form?.get("options")))).toEqual({
+    async: true,
+    grounding: true,
+  })
+})
+
+test("no options field is sent when nothing asks for one", async () => {
+  let body: Record<string, unknown> = {}
+  const client = makeClient(async (request) => {
+    body = (await request.json()) as Record<string, unknown>
+    return json(PARSED)
+  })
+  await client.parse({ url: "https://x/a.pdf", grounding: false })
+  expect(body).toEqual({ document: "https://x/a.pdf" })
+})

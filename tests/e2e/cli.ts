@@ -964,7 +964,7 @@ step("stream", "sources, tokens, done, and composed with a schema", async (c) =>
   say("early close released the stream cleanly")
 })
 
-step("parse", "sync parse, then an async parse job", async (c) => {
+step("parse", "sync parse, an async parse job, then a grounded parse", async (c) => {
   const doc = c.docs[0] as Doc
   const pages = (await c.client.parse({ file: doc.path })).result.pages
   assert.ok(pages.length > 0, "sync parse returned no pages")
@@ -978,6 +978,14 @@ step("parse", "sync parse, then an async parse job", async (c) => {
   })
   assert.ok(job.result?.pages.length, "async parse returned no pages")
   say(`async: job ${job.id} completed in ${job.processingTimeMs}ms`)
+
+  const grounded = (await c.client.parse({ file: doc.path, grounding: true })).result
+    .pages
+  assert.ok(
+    grounded.some((p) => p.blocks?.length),
+    "grounding: true returned no blocks",
+  )
+  say(`grounded: ${grounded.reduce((n, p) => n + (p.blocks?.length ?? 0), 0)} block(s)`)
 })
 
 step(

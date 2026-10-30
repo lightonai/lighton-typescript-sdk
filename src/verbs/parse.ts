@@ -13,6 +13,13 @@ export interface ParseOptions {
   file?: FileSource
   /** A publicly accessible URL for the server to fetch. Excludes `file`. */
   url?: string
+  /**
+   * Also return each page's layout as `page.blocks`: typed blocks in reading order with a
+   * bounding box on a 0-1000 grid (origin top-left), charts as HTML tables, images as
+   * short descriptions. More than doubles the response, since each page's text comes back
+   * in both `markdown` and its blocks.
+   */
+  grounding?: boolean
   /** Caller cancellation. */
   signal?: AbortSignal
 }
@@ -31,7 +38,7 @@ export interface ParseAsyncOptions extends ParseOptions {
  * Pass exactly one of `file` or `url`.
  *
  * @param transport - The client to send through.
- * @param options - Source, execution mode, and waiting. See {@link ParseOptions}.
+ * @param options - Source, grounding, execution mode, and waiting. See {@link ParseOptions}.
  * @returns A `ParseResponse` when inline, a {@link ParseJob} when `mode` is `async`,
  *   pollable (the default) or already finished (`wait: true`).
  * @throws Error - If not exactly one of `file`/`url` is given, or `wait` is used
@@ -58,6 +65,10 @@ export async function parse(
     throw new Error('wait is only meaningful with mode: "async"')
   }
   const signal = options.signal ? { signal: options.signal } : {}
+  const parseOptions: Record<string, boolean> = {}
+  if (isAsync) parseOptions.async = true
+  if (options.grounding) parseOptions.grounding = true
+  const hasOptions = Object.keys(parseOptions).length > 0
 
   let response: Record<string, unknown>
   if (file !== undefined) {
@@ -65,11 +76,11 @@ export async function parse(
     const form = new FormData()
     form.append("file", part.blob, part.filename)
     // Multipart: options ride as a JSON-encoded form field.
-    if (isAsync) form.append("options", JSON.stringify({ async: true }))
+    if (hasOptions) form.append("options", JSON.stringify(parseOptions))
     response = await transport.request("POST", PARSE_PATH, { body: form, ...signal })
   } else {
     const body: Record<string, unknown> = { document: url }
-    if (isAsync) body.options = { async: true }
+    if (hasOptions) body.options = parseOptions
     response = await transport.request("POST", PARSE_PATH, { json: body, ...signal })
   }
 

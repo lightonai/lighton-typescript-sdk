@@ -318,7 +318,9 @@ drains, then the error is rethrown.
 3. **Model exactly what the server does, then pin it with a test.** Every quirk here is paired with a
    regression test.
 4. **Reuse one shape everywhere.** `file.pages()` returns the same `Page` that `parse` returns;
-   `SourcesEvent.results` reuses the same `AskResultItem` as non-streaming `ask`.
+   `SourcesEvent.results` reuses the same `AskResultItem` as non-streaming `ask`. `Page` is an alias
+   of the generated shape, so `blocks` (from `parse({ grounding: true })`) arrived with
+   `make gen-types` and the verb only had to send the flag.
 5. **Do not model a resource that does not exist.** There is no ingestion-job resource, because the
    File is the job. There is no batch endpoint, because batch is a client-side orchestrator.
 6. **Method, not field, when the data is expensive or detail-only**: `pages()`, `facets()`,
