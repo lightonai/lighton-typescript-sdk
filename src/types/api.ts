@@ -220,7 +220,8 @@ export interface paths {
          *     - `define_content_type`: create or update a tree node (root or child)
          *     - `undefine_content_type`: delete a node and its entire subtree
          *     - `define_attribute`: add or update a metadata field on a node
-         *     - `undefine_attribute`: remove a metadata field
+         *     - `undefine_attribute`: remove a metadata field and its values, on the node's files and on those
+         *       of the children that inherit it
          *
          *     **Building a tree from scratch, example flow:**
          *
@@ -553,7 +554,7 @@ export interface paths {
          *
          *     **Idempotent upload:** When `external_metadata.external_id` is provided and a manually-uploaded document with the same external ID already exists in the target workspace, the existing document is returned with `200 OK` instead of creating a duplicate. This makes bulk re-runs safe without requiring a pre-check. Datasource-imported documents are not affected.
          *
-         *     **Accepted file formats:** `csv`, `doc`, `docx`, `htm`, `html`, `jpeg`, `jpg`, `json`, `md`, `odp`, `odt`, `pdf`, `png`, `ppt`, `pptx`, `txt`, `xhtml`, `xls`, `xlsx`, `yaml`, `yml`
+         *     **Accepted file formats:** `csv`, `doc`, `docx`, `htm`, `html`, `jfif`, `jpe`, `jpeg`, `jpg`, `json`, `md`, `odp`, `odt`, `pdf`, `png`, `ppt`, `pptx`, `txt`, `xhtml`, `xls`, `xlsx`, `yaml`, `yml`
          *
          *     **Customization Options:**
          *     - `title`: Customize the document title (defaults to filename without extension)
@@ -1022,11 +1023,23 @@ export interface paths {
          *
          *     For multipart uploads, pass `options` as a JSON-encoded form field: `-F 'options={"async":true}'`.
          *
+         *     ### Layout grounding (`options.grounding = true`, since 3.16.0)
+         *     Each page also returns its layout as a `blocks` array: one block per element of the page (title, text, table, image, ...) in reading order, with its `type`, its bounding box (`top_left_x`, `top_left_y`, `bottom_right_x`, `bottom_right_y`) and its `content`. Grounding also turns charts and images into text: a `chart` block's `content` is the chart's data as an HTML table, and an `image` block's is a short description of the image. Coordinates are on a 0–1000 grid of the page, origin top-left: x in thousandths of the page width, y in thousandths of its height. To place a box on any rendering of the page, multiply x by the rendering's width and y by its height, then divide by 1000. For an image input, the page is the image itself, in both modes. For Office and HTML inputs, the pages are those of the PDF the platform renders from the file, which may paginate differently from the application that made it. `markdown` keeps its usual shape: the page text in reading order, chart tables and image descriptions included, with no box markers. A page the model returns without its layout keeps its text in `markdown`, with an empty `blocks`, and the rest of the document is parsed as usual; a blank page has both empty. Grounding works in both modes: with `options.async`, the completed job returned by `GET /api/v3/parse/{id}` carries the same per-page `blocks`.
+         *
+         *     ```bash
+         *     curl -X POST https://api.lighton.ai/api/v3/parse \
+         *       -H 'Authorization: Bearer $TOKEN' \
+         *       -F file=@invoice.pdf \
+         *       -F 'options={"grounding":true}'
+         *     ```
+         *
          *     **Supported file types:** `.pdf`, `.png`, `.jpg`, `.jpeg`, `.pptx`, `.ppt`, `.odp`, `.docx`, `.odt`, `.doc`, `.html`
          *
          *     **Sync limits:** 20 MB file size, 15 pages.
          *
          *     **Async limits:** 100 MB file size, 1000 pages.
+         *
+         *     Grounding keeps these limits. A grounded result carries each page's text twice, in `markdown` and in its blocks' `content`, so it is more than twice the size of a plain one.
          */
         post: operations["api_v3_parse_create"];
         delete?: never;
@@ -1273,7 +1286,9 @@ export interface paths {
          *
          *     **Member Visibility:** Instance-level users and company-level users see all members. Workspace OWNER sees members. EDITOR and VIEWER do not see members.
          *
-         *     **Sync status:** For synced workspaces, the response includes a `sync` block with `datasource_type`, `source_name`, `last_status`, `updated_at`, `failed_files_count`, and `next_import_date`. Use this field for polling the sync state.
+         *     **Sync status:** For synced workspaces, the response includes a `sync` block with `datasource_type`, `source_name`, `last_status`, `updated_at`, `failed_files_count`, `pending_files_count` and `next_import_date`. Use this field for polling the sync state. A sync runs in two steps, download then upload: `last_status: success` with no files and a non-zero `pending_files_count` means the upload is still to come, not that the source is empty.
+         *
+         *     **Caller permissions:** `user_permissions` reports what the caller may do on this workspace (upload or delete files, edit the workspace or its datasource, delete it, manage its members). Each flag follows the same rule as the endpoint it describes, including the limit of a workspace-scoped API key, so prefer it over deriving access from `user_role`.
          *
          *     Non-existent and unauthorized workspaces are treated identically (existence is not disclosed).
          */
@@ -1290,7 +1305,7 @@ export interface paths {
          *
          *     **Restrictions:**
          *     - PERSONAL workspaces cannot be deleted (system-managed)
-         *     - Caller must be an OWNER of the workspace (or hold instance/company workspace-delete permission)
+         *     - Caller must be an OWNER of the workspace. Company and instance administrators delete through `DELETE /api/v3/company/workspaces/{id}` or `DELETE /api/v3/instance/workspaces/{id}`
          */
         delete: operations["api_v3_workspaces_destroy"];
         options?: never;
@@ -1305,7 +1320,7 @@ export interface paths {
          *     - **name** (string, optional): Desired workspace name (max 100 characters, cannot be empty)
          *     - **description** (string, optional): Desired workspace description. Send empty string or null to clear.
          *
-         *     **Convert to a synced workspace** (workspace OWNER or a role granting workspace edit/delete):
+         *     **Convert to a synced workspace** (workspace OWNER only; administrators use `PATCH /api/v3/company/workspaces/{id}`):
          *     - **datasource** (object): Datasource configuration used to populate the workspace. Credentials are validated against the external source before persistence; use `POST /api/v3/workspaces/{id}/datasource/test` to validate them without committing.
          *     - The target workspace must be empty (no documents) and not already synced.
          *
@@ -1321,6 +1336,68 @@ export interface paths {
          *     - Conversion is one-way: a synced workspace cannot be reverted to manual via the API
          */
         patch: operations["api_v3_workspaces_partial_update"];
+        trace?: never;
+    };
+    "/api/v3/workspaces/{id}/datasource": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Operate a workspace's datasource
+         * @description ⚠️ **ALPHA ENDPOINT** - This endpoint is in alpha and subject to breaking changes. Use with caution in production environments.
+         *
+         *     Operate the datasource a workspace already has: replace its credentials, pause its syncing, or resume it. Send `credentials` (with `type`), `enabled`, or both.
+         *
+         *     This is not the datasource edit on `PATCH /api/v3/workspaces/{id}`, which is refused once a sync has succeeded. That lock covers **what** a workspace syncs — changing it would orphan the documents already ingested, so the edit purges the collection. Replacing a credential changes only **how** the source is signed in to, so it stays available after the lock and touches no documents and no `filter_criteria`.
+         *
+         *     Replacing credentials proves them against the source before they are stored, and re-arms the import: a source that refused the previous credentials leaves it where neither the scheduler nor the retry orchestrator collects it, since retrying refused credentials would lock the account.
+         *
+         *     `credentials` replaces the whole set — a field left out is cleared, not kept. For **smb** that includes `auth_protocol`, so a payload omitting it downgrades a Kerberos source to `negotiate`, which falls back to NTLM. Read the current values from the workspace's `sync` block and send them back unchanged.
+         *
+         *     **Access:** workspace OWNER. Mail datasources are managed in the admin and are refused here.
+         *
+         *     Credentials per type are the ones listed for `POST /api/v3/workspaces/datasource/test`.
+         */
+        patch: operations["api_v3_workspaces_datasource_partial_update"];
+        trace?: never;
+    };
+    "/api/v3/workspaces/{id}/datasource/refusals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the directories an SMB walk could not enter
+         * @description ⚠️ **ALPHA ENDPOINT** - This endpoint is in alpha and subject to breaking changes. Use with caution in production environments.
+         *
+         *     Every directory the workspace's current SMB walk could not enter, with why.
+         *
+         *     `sync.walk.refused_directories` carries only a sample, because that block rides on every workspace card; this is the whole list. A walk records at most 200 directories, so the response is returned whole rather than paginated.
+         *
+         *     Their files are absent from the workspace and only the file server's administrator can change that — the paths are what they need. `incomplete` means the walk stopped recording skipped directories, so deletion detection is off for this import and this list is partial.
+         *
+         *     Answers an empty list for a workspace whose datasource is not SMB.
+         *
+         *     **Access:** any member of the workspace.
+         */
+        get: operations["api_v3_workspaces_datasource_refusals_retrieve"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v3/workspaces/datasource/browse": {
@@ -1377,11 +1454,11 @@ export interface paths {
          *     - **sharepoint**: `client_id`, `client_secret`, `tenant_id`, `site_id` (optional), `site_name` (optional)
          *     - **servicenow**: `instance_url`, `username`, `password`
          *     - **webscrapper**: no credentials required
-         *     - **smb**: `instance_url` (`smb://host[:port]`), `username`, `password`
+         *     - **smb**: `instance_url` (`smb://host[:port]`), `username`, `password`; optional `auth_protocol` (`negotiate` by default, `ntlm`, or `kerberos`, which never falls back to NTLM), `kerberos_realm` (defaults to the realm of a `user@REALM` username), `kerberos_kdcs` (comma-separated `host[:port]`, found through DNS when empty) and `connect_address` (where to connect when the server name in `instance_url` does not resolve; that name still names the Kerberos ticket)
          *
          *     Filter criteria per type:
          *     - **googledrive**: `folder_id` (required), `recursive` (optional)
-         *     - **sharepoint**: `folder_path` (required), `recursive` (optional)
+         *     - **sharepoint**: `folder_path` (required; `/` syncs every document library of the site, a library name syncs that library), `recursive` (optional)
          *     - **servicenow**: `doc_type` (required, e.g. `knowledge`)
          *     - **webscrapper**: `start_url` (required)
          *     - **smb**: `share_name` (required), `path` (optional), `recursive` (optional)
@@ -2582,10 +2659,27 @@ export interface components {
          *     added here without breaking callers that only consume ``index`` + ``markdown``.
          */
         Page: {
+            /** @description (since 3.16.0) The page's layout: its blocks in reading order, each with a type, a bounding box and its content. Present only when grounding was requested. Empty for a blank page, and for a page the model returned without its layout, whose text is still in `markdown`. */
+            blocks?: components["schemas"]["PageBlock"][];
             /** @description Page number within the document (1-based). */
             index: number;
             /** @description Page text rendered as Markdown. */
             markdown: string;
+        };
+        /** @description One block of a page's layout. Coordinates are on a 0-1000 grid of the page, origin top-left. */
+        PageBlock: {
+            /** @description Right edge of the box, in thousandths of the page width (0–1000). */
+            bottom_right_x: number;
+            /** @description Bottom edge of the box, in thousandths of the page height (0–1000). */
+            bottom_right_y: number;
+            /** @description The block's content as Markdown: tables as HTML, formulas as LaTeX, a chart as an HTML table of its data, an image as a short description of it. */
+            content: string;
+            /** @description Left edge of the box, in thousandths of the page width (0–1000). */
+            top_left_x: number;
+            /** @description Top edge of the box, in thousandths of the page height (0–1000). */
+            top_left_y: number;
+            /** @description Block type: `title`, `section`, `text`, `list`, `caption`, `footnote`, `aside_text`, `header`, `footer`, `page_number`, `table`, `chart`, `formula`, `code` or `image`. Other types may be added; handle an unknown one like `text`. */
+            type: string;
         };
         PaginatedAPIKeyV3ResponseList: {
             /** @example 123 */
@@ -2697,13 +2791,18 @@ export interface components {
              * @description Publicly accessible URL of the document to parse.
              */
             document: string;
-            /** @description Parse options. Currently supports `{"async": true}` to queue the document. */
+            /** @description Parse options. Supports `{"async": true}` to queue the document and `{"grounding": true}` to also return each page's layout as `blocks` with bounding boxes. */
             options?: {
                 /**
                  * @description Queue the document for asynchronous parsing and return 202 with a job id.
                  * @default false
                  */
                 async: boolean;
+                /**
+                 * @description Also return the layout of every page as `blocks`: one block per element of the page, with its type, bounding box and content. A chart comes back as an HTML table of its data, an image as a short description of it. Sync and async.
+                 * @default false
+                 */
+                grounding: boolean;
             } & {
                 [key: string]: unknown;
             };
@@ -2714,13 +2813,18 @@ export interface components {
              * @description The document to parse.
              */
             file: string;
-            /** @description Parse options as a JSON-encoded string. Currently supports `{"async": true}` to queue the document. */
+            /** @description Parse options. Supports `{"async": true}` to queue the document and `{"grounding": true}` to also return each page's layout as `blocks` with bounding boxes. Pass it as a JSON-encoded string. */
             options?: {
                 /**
                  * @description Queue the document for asynchronous parsing and return 202 with a job id.
                  * @default false
                  */
                 async: boolean;
+                /**
+                 * @description Also return the layout of every page as `blocks`: one block per element of the page, with its type, bounding box and content. A chart comes back as an HTML table of its data, an image as a short description of it. Sync and async.
+                 * @default false
+                 */
+                grounding: boolean;
             } & {
                 [key: string]: unknown;
             };
@@ -2804,6 +2908,39 @@ export interface components {
             tags?: number[];
             /** @description Updated title for the document. */
             title?: string;
+        };
+        /**
+         * StandardWorkspaceDatasourceOperateV3Request
+         * @description Operate the datasource a workspace already has: rotate its credentials, pause or resume it.
+         *
+         *     Carries no `filter_criteria` and no `name` on purpose. What a workspace syncs is locked by its
+         *     first successful sync, so a payload that could restate it is one a caller can get wrong — and
+         *     `edit_workspace_datasource` purges the collection when it changes, which is never what a
+         *     credential rotation means.
+         *
+         *     `credentials` replaces the whole credential set, as everywhere else: a field left out is
+         *     cleared, not kept. For SMB that includes `auth_protocol`, so a payload omitting it downgrades
+         *     a Kerberos source to `negotiate` — read the current values off the `sync` block and send them
+         *     back. See DAT0003.
+         */
+        PatchedStandardWorkspaceDatasourceOperateV3Request: {
+            /**
+             * Credentials
+             * @default null
+             */
+            credentials: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Enabled
+             * @default null
+             */
+            enabled: boolean | null;
+            /**
+             * Type
+             * @default null
+             */
+            type: ("googledrive" | "sharepoint" | "servicenow" | "webscrapper" | "smb" | "mail_exchange") | null;
         };
         /** @description Reject any request fields not declared on the serializer. */
         PatchedUpdateAPIKeyV3Request: {
@@ -3182,7 +3319,7 @@ export interface components {
             type: components["schemas"]["StandardWorkspaceDatasourceV3RequestTypeEnum"];
         };
         /** @enum {string} */
-        StandardWorkspaceDatasourceV3RequestTypeEnum: "googledrive" | "sharepoint" | "servicenow" | "webscrapper" | "smb";
+        StandardWorkspaceDatasourceV3RequestTypeEnum: "googledrive" | "sharepoint" | "servicenow" | "webscrapper" | "smb" | "mail_exchange";
         /** @description V3 Response serializer for company workspace creation and retrieval. */
         StandardWorkspaceV3DetailsResponse: {
             /** Format: date-time */
@@ -3199,6 +3336,8 @@ export interface components {
             updated_at: string;
             /** Format: double */
             used_storage: number;
+            /** @description The caller's permissions on this workspace, including the limit of a workspace-scoped API key. */
+            readonly user_permissions: components["schemas"]["WorkspaceUserPermissions"];
             readonly user_role: components["schemas"]["UserRoleEnum"] | components["schemas"]["BlankEnum"];
             workspace_type: string;
         };
@@ -3362,6 +3501,13 @@ export interface components {
          * @enum {string}
          */
         UserRoleEnum: "owner" | "editor" | "viewer";
+        /** @description One directory an SMB walk could not enter. */
+        WalkRefusal: {
+            /** @description Share-relative path of the directory. */
+            path: string;
+            /** @description Why it was skipped: unreadable, reparse point, cycle or too deep. Empty for a walk that started before the reason was recorded — the path is still accurate. */
+            reason: string;
+        };
         /**
          * WorkspaceDatasourceBrowseV3Request
          * @description Pydantic request model for browsing the remote folder hierarchy of a datasource.
@@ -3412,6 +3558,14 @@ export interface components {
          * @enum {string}
          */
         WorkspaceMemberRoleEnum: "viewer" | "editor" | "owner";
+        /** @description Every directory the current walk could not enter. SMB only. */
+        WorkspaceRefusals: {
+            /** @description How many there are. Equals len(refusals): a walk records at most 200 directories. */
+            count: number;
+            /** @description True once the walk stopped recording skipped directories. Deletion detection is then off for this import, and this list is not the whole story. */
+            incomplete: boolean;
+            refusals: components["schemas"]["WalkRefusal"][];
+        };
         /**
          * @description An API key that can access a single workspace, seen from the workspace side.
          *
@@ -3435,27 +3589,91 @@ export interface components {
             language: string;
             summary: string;
         };
+        /** @description Hand-written schema twin of `authentication.schemas.WorkspaceSync` — see the note above. */
         WorkspaceSync: {
+            /** @description (since 3.16.0) SMB only: `negotiate`, `ntlm` or `kerberos`. Empty for every other type. Editing a datasource replaces its whole connection, so a client that omits this on a write downgrades a Kerberos source to `negotiate`, which falls back to NTLM. Read it here and send it back unchanged. */
+            auth_protocol: string;
             client_id: string;
+            /** @description (since 3.16.0) SMB only: where the connection is opened when the server name in instance_url does not resolve from our network. That name still names the Kerberos ticket. */
+            connect_address: string;
+            /** @description (since 3.16.0) True when the last session failed because the source refused the credentials themselves. Syncing has stopped and is not retried automatically — each attempt counts towards the account's lockout — so it resumes only once the credentials are replaced through PATCH /api/v3/workspaces/{id}/datasource. */
+            credentials_rejected: boolean;
             datasource_type: string;
             editable: boolean;
+            /** @description Errors on the last import session. Counts every error entry, including notes about the session as a whole — an SMB directory the walk could not enter, a deletion sweep that declined to run — so it is not a count of files alone. For SMB, `walk.failed_files` is the files-only figure; the difference between the two is the refused directories. */
             failed_files_count: number;
             filter_criteria: unknown;
             instance_url: string | null;
+            /** @description (since 3.16.0) SMB only: the realm's key distribution centres, comma-separated. */
+            kerberos_kdcs: string;
+            /** @description (since 3.16.0) SMB only: the Kerberos realm. Empty for other types. */
+            kerberos_realm: string;
             last_status: string;
             name: string;
             /** Format: date-time */
             next_import_date: string | null;
+            pending_files_count: number;
             site_name: string;
             source_name: string;
             tenant_id: string;
             /** Format: date-time */
             updated_at: string | null;
+            /** @description (since 3.16.0) Account name (SMB, ServiceNow). Never a secret. Empty where the type has none. */
+            username: string;
+            /** @description (since 3.16.0) Progress of the directory walk. Present for SMB only; null otherwise. */
+            walk: components["schemas"]["WorkspaceSyncWalk"] | null;
+        };
+        /**
+         * @description How far the directory walk has got. SMB only — null for every other provider.
+         *
+         *     SMB has no changes API, so a sync walks the share in batches that each end deliberately and
+         *     report SUCCESS. `last_status` therefore reads "success, minutes ago" throughout a first scan
+         *     that takes days, and cannot tell that apart from a finished one. See DAT0001 §2.
+         */
+        WorkspaceSyncWalk: {
+            /** @description Bytes this walk has pulled off the share so far, summed over its batches. */
+            bytes_read: number;
+            /** @description False while the walk still has directories left to visit. */
+            complete: boolean;
+            /** @description Individual files of the last session that failed, counting files only. The `sync` block's own `failed_files_count` is shared with every other provider and counts session-level notes too, so for SMB it also includes the refused directories below — prefer this one. */
+            failed_files: number;
+            /** @description Files this walk has processed so far, summed over its batches. Not the workspace's file count, which is the whole corpus: on a re-scan the two diverge completely. */
+            files_seen: number;
+            /** @description Directories the walk has queued and not yet visited. Zero once the walk is complete. */
+            pending_directories: number;
+            /** @description True once the walk ran out of room to record what it skipped. Deletion detection is then off for this import: files removed from the share stay in the workspace, with nothing else reporting it. */
+            refusals_incomplete: boolean;
+            /** @description Up to 10 of those directories, share-relative. A sample, not the whole list: the walk remembers up to 200 and this block rides on every workspace card. */
+            refused_directories: string[];
+            /** @description Directories this walk could not enter — unreadable, a junction or DFS link, a loop, or past the depth bound. Their files are absent from the sync and only the file server's administrator can change that. Counted apart from failed files, which are retried on the next walk. */
+            refused_directories_count: number;
+            /**
+             * Format: date-time
+             * @description When the walk in progress began — not when its last batch ran. Null before the first batch.
+             */
+            started_at: string | null;
         };
         WorkspaceTaxonomy: {
             /** Format: double */
             classified_files_rate: number;
             root_content_types: components["schemas"]["RootContentTypeEntry"][];
+        };
+        /** @description What the caller may do on this workspace, through `/api/v3/workspaces` and `/api/v3/files`. */
+        WorkspaceUserPermissions: {
+            /** @description Whether the caller may delete files in this workspace. Always false for a synced workspace. */
+            can_delete_files: boolean;
+            /** @description Whether the caller may delete the workspace. */
+            can_delete_workspace: boolean;
+            /** @description Whether the caller may edit the datasource of this synced workspace. False once a sync has succeeded, since the configuration is then locked, and for a workspace with no datasource. */
+            can_edit_datasource: boolean;
+            /** @description Whether the caller may update the name and description. */
+            can_edit_workspace: boolean;
+            /** @description Whether the caller may list, add and remove workspace members. */
+            can_manage_members: boolean;
+            /** @description (since 3.16.0) Whether the caller may replace this datasource's credentials, or pause and resume its syncing, through PATCH /api/v3/workspaces/{id}/datasource. Unlike can_edit_datasource this stays true once a sync has succeeded: the lock covers what a workspace syncs, not how it signs in. */
+            can_operate_datasource: boolean;
+            /** @description Whether the caller may upload files to this workspace. Always false for a synced workspace. */
+            can_upload_files: boolean;
         };
     };
     responses: never;
@@ -3533,6 +3751,7 @@ export type SchemaLanguageEnum = components['schemas']['LanguageEnum'];
 export type SchemaModeEnum = components['schemas']['ModeEnum'];
 export type SchemaNullEnum = components['schemas']['NullEnum'];
 export type SchemaPage = components['schemas']['Page'];
+export type SchemaPageBlock = components['schemas']['PageBlock'];
 export type SchemaPaginatedApiKeyV3ResponseList = components['schemas']['PaginatedAPIKeyV3ResponseList'];
 export type SchemaPaginatedFileListResponseSerializerV3List = components['schemas']['PaginatedFileListResponseSerializerV3List'];
 export type SchemaPaginatedStandardWorkspaceV3ListResponseList = components['schemas']['PaginatedStandardWorkspaceV3ListResponseList'];
@@ -3550,6 +3769,7 @@ export type SchemaParseUsage = components['schemas']['ParseUsage'];
 export type SchemaPatchedBudgetAlertBulkToggleRequest = components['schemas']['PatchedBudgetAlertBulkToggleRequest'];
 export type SchemaPatchedBudgetAlertUpdateRequest = components['schemas']['PatchedBudgetAlertUpdateRequest'];
 export type SchemaPatchedFileUpdateRequestSerializerV3 = components['schemas']['PatchedFileUpdateRequestSerializerV3'];
+export type SchemaPatchedStandardWorkspaceDatasourceOperateV3Request = components['schemas']['PatchedStandardWorkspaceDatasourceOperateV3Request'];
 export type SchemaPatchedUpdateApiKeyV3Request = components['schemas']['PatchedUpdateAPIKeyV3Request'];
 export type SchemaPatchedUpdateWorkspaceV3Request = components['schemas']['PatchedUpdateWorkspaceV3Request'];
 export type SchemaPendingReprocessEnum = components['schemas']['PendingReprocessEnum'];
@@ -3589,15 +3809,19 @@ export type SchemaThresholdTypeEnum = components['schemas']['ThresholdTypeEnum']
 export type SchemaThumbnailResponse = components['schemas']['ThumbnailResponse'];
 export type SchemaThumbnailResponseStatusEnum = components['schemas']['ThumbnailResponseStatusEnum'];
 export type SchemaUserRoleEnum = components['schemas']['UserRoleEnum'];
+export type SchemaWalkRefusal = components['schemas']['WalkRefusal'];
 export type SchemaWorkspaceDatasourceBrowseV3Request = components['schemas']['WorkspaceDatasourceBrowseV3Request'];
 export type SchemaWorkspaceDatasourceBrowseV3RequestTypeEnum = components['schemas']['WorkspaceDatasourceBrowseV3RequestTypeEnum'];
 export type SchemaWorkspaceDatasourceBrowseV3Response = components['schemas']['WorkspaceDatasourceBrowseV3Response'];
 export type SchemaWorkspaceInFileResponseSerializerV3 = components['schemas']['WorkspaceInFileResponseSerializerV3'];
 export type SchemaWorkspaceMemberRoleEnum = components['schemas']['WorkspaceMemberRoleEnum'];
+export type SchemaWorkspaceRefusals = components['schemas']['WorkspaceRefusals'];
 export type SchemaWorkspaceScopedApiKey = components['schemas']['WorkspaceScopedAPIKey'];
 export type SchemaWorkspaceSummary = components['schemas']['WorkspaceSummary'];
 export type SchemaWorkspaceSync = components['schemas']['WorkspaceSync'];
+export type SchemaWorkspaceSyncWalk = components['schemas']['WorkspaceSyncWalk'];
 export type SchemaWorkspaceTaxonomy = components['schemas']['WorkspaceTaxonomy'];
+export type SchemaWorkspaceUserPermissions = components['schemas']['WorkspaceUserPermissions'];
 export type $defs = Record<string, never>;
 export interface operations {
     api_v3_ask_create: {
@@ -5726,7 +5950,7 @@ export interface operations {
                     "application/json": components["schemas"]["ParseAsyncResponse"];
                 };
             };
-            /** @description Bad request — unsupported format, or page limit exceeded (15 pages sync / 1000 pages async). */
+            /** @description Bad request — unsupported format, page limit exceeded (15 pages sync / 1000 pages async), or grounding requested while the parser model does not support it. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -5753,7 +5977,7 @@ export interface operations {
                     "application/json": components["schemas"]["APIV3ErrorResponse"];
                 };
             };
-            /** @description Validation error — missing document, both a file and a URL provided, or an invalid document URL. */
+            /** @description Validation error — missing document, both a file and a URL provided, an invalid document URL, or a non-boolean `options.grounding`. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -6212,8 +6436,9 @@ export interface operations {
                  *     * `sharepoint` - SharePoint
                  *     * `webscrapper` - WebScrapper
                  *     * `smb` - SMB
+                 *     * `mail_exchange` - Exchange Mail
                  */
-                datasource_type?: "googledrive" | "servicenow" | "sharepoint" | "smb" | "webscrapper";
+                datasource_type?: "googledrive" | "mail_exchange" | "servicenow" | "sharepoint" | "smb" | "webscrapper";
                 /**
                  * @description Method for adding documents to this workspace: manual uploads or synced from datasources
                  *
@@ -6529,6 +6754,146 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["APIV3ValidationErrorResponse"];
+                };
+            };
+            /** @description API is under maintenance. Check `GET /api/v3/system/status` for active periods and retry. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceMaintenance503"];
+                };
+            };
+        };
+    };
+    api_v3_workspaces_datasource_partial_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PatchedStandardWorkspaceDatasourceOperateV3Request"];
+                "application/x-www-form-urlencoded": components["schemas"]["PatchedStandardWorkspaceDatasourceOperateV3Request"];
+                "multipart/form-data": components["schemas"]["PatchedStandardWorkspaceDatasourceOperateV3Request"];
+            };
+        };
+        responses: {
+            /** @description The workspace, with a refreshed `sync` block */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StandardWorkspaceV3DetailsResponse"];
+                };
+            };
+            /** @description Bad Request - the source refused the credentials, the workspace has no datasource, or the payload names a different datasource type */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIV3ErrorResponse"];
+                };
+            };
+            /** @description Authentication credentials were not provided or are invalid */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIV3ErrorResponse"];
+                };
+            };
+            /** @description Insufficient permissions */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIV3ErrorResponse"];
+                };
+            };
+            /** @description The requested resource was not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIV3ErrorResponse"];
+                };
+            };
+            /** @description Conflict - a sync is running for this workspace */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIV3ErrorResponse"];
+                };
+            };
+            /** @description Request body is valid JSON but one or more fields failed validation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIV3ValidationErrorResponse"];
+                };
+            };
+            /** @description API is under maintenance. Check `GET /api/v3/system/status` for active periods and retry. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceMaintenance503"];
+                };
+            };
+        };
+    };
+    api_v3_workspaces_datasource_refusals_retrieve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The directories the walk could not enter */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceRefusals"];
+                };
+            };
+            /** @description Authentication credentials were not provided or are invalid */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIV3ErrorResponse"];
+                };
+            };
+            /** @description The requested resource was not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIV3ErrorResponse"];
                 };
             };
             /** @description API is under maintenance. Check `GET /api/v3/system/status` for active periods and retry. */
