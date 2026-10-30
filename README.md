@@ -938,7 +938,8 @@ try {
 }
 ```
 
-`index` is null on any non-batch error. Past 50 actions `batchFacets()` throws before the request
+`index` is null on any non-batch error. See [Errors](#errors) for the rest of what an error carries,
+including the per-field causes of a 422. Past 50 actions `batchFacets()` throws before the request
 goes out: split the list yourself rather than have the SDK guess where to cut, since chunking would
 restore the per-chunk reindex the endpoint exists to avoid.
 
@@ -1050,7 +1051,7 @@ LightOnError
 ├── LightOnConnectionError    transport failure before any response
 ├── MalformedResponseError    a 2xx body that was not JSON
 ├── StreamError               an error event partway through a stream
-└── LightOnAPIError           non-2xx; carries statusCode, body, and index on a batch
+└── LightOnAPIError           non-2xx; carries statusCode, body, fields, and index on a batch
     ├── AuthenticationError   401, bad or missing API key
     ├── PermissionDeniedError 403, valid credentials, not allowed
     ├── NotFoundError         404
@@ -1079,6 +1080,33 @@ try {
 caught separately. `MaintenanceError` is the one mapping keyed on the **body** rather than the
 status: a 503 without the maintenance marker stays a plain `ServerError`, because only one of the two
 is worth retrying.
+
+**`fields` is where a 422 actually explains itself.** Its top-level `detail` is a fixed sentence, the
+same for every validation failure, so the field name and its cause are the part worth logging. They
+are already in the message, so a bare stack trace names the offender:
+
+```
+LightOnAPIError: 422: One or more fields failed validation. (choices: must be a non-empty list; title: may not be blank)
+```
+
+and the structured form is there when you want to branch on it rather than print it:
+
+```ts
+import { LightOnAPIError } from "@lighton-ai/sdk"
+
+try {
+  await client.extract(Invoice, { file: "invoice.pdf" })
+} catch (error) {
+  if (!(error instanceof LightOnAPIError)) throw error
+  for (const [name, causes] of Object.entries(error.fields)) {
+    for (const cause of causes) console.log(name, cause.error, cause.detail)
+  }
+}
+```
+
+`fields` is keyed by the API's own field names and is `{}` on any other failure. Each entry keeps the
+machine-readable `error` code beside the human `detail`, and anything the error does not name is
+still on `body`, the payload exactly as the API sent it.
 
 ## Client configuration
 

@@ -489,3 +489,112 @@ test("an absolute path is used as-is, so pagination `next` links work", async ()
     "https://api.lighton.ai/api/v3/tags?page=2",
   ])
 })
+
+// --- field-level validation errors ------------------------------------------
+// The top-level `detail` of a 422 is a constant sentence, so every validation failure
+// would otherwise stringify identically and a log of them names nothing. The cause lives
+// in `fields`, which the message and a dedicated property both carry. Parsing happens in
+// the base constructor, so it reaches every subclass.
+
+const VALIDATION_BODY = {
+  code: 422,
+  error: "validation_error",
+  detail: "One or more fields failed validation.",
+  fields: { choices: [{ error: "invalid", detail: "must be a non-empty list" }] },
+}
+
+// No statusText on these fakes, as with real fetch over HTTP/2, so messages read `422: ...`.
+const failWith = async (status: number, body: unknown) =>
+  (await makeClient(() => json(status, body))
+    .request("POST", "/api/v3/ask")
+    .catch((e: unknown) => e)) as exc.LightOnAPIError
+
+test("a validation 422 names the failing field in the message", async () => {
+  const error = await failWith(422, VALIDATION_BODY)
+  expect(error.message).toBe(
+    "422: One or more fields failed validation. " +
+      "(choices: must be a non-empty list)",
+  )
+  expect(error.fields).toEqual(VALIDATION_BODY.fields) // the code beside it survives
+  expect(error.body).toEqual(VALIDATION_BODY) // the untouched payload is still there
+})
+
+test("field errors join across fields and causes", async () => {
+  const error = await failWith(422, {
+    detail: "One or more fields failed validation.",
+    fields: {
+      choices: [
+        { error: "invalid", detail: "must be a non-empty list" },
+        { error: "type", detail: "must contain strings" },
+      ],
+      title: [{ error: "blank", detail: "may not be blank" }],
+    },
+  })
+  expect(error.message).toContain(
+    "(choices: must be a non-empty list, must contain strings; title: may not be blank)",
+  )
+})
+
+test("an error without fields is unchanged", async () => {
+  // The no-regression pin: errors that aren't field-level must read as before.
+  const error = await failWith(404, { detail: "nope" })
+  expect(error).toBeInstanceOf(exc.NotFoundError)
+  expect(error.message).toBe("404: nope")
+  expect(error.fields).toEqual({})
+})
+
+test.each([
+  null,
+  "choices must be a non-empty list", // a string where a mapping was promised
+  [{ error: "invalid" }], // a list
+  { choices: "must be a non-empty list" }, // value is not a list
+  { choices: ["must be a non-empty list"] }, // entries are not objects
+  { choices: [] }, // nothing to say, so not named at all
+])(
+  "malformed fields %j degrade to empty without breaking the error",
+  async (fields) => {
+    const body = { detail: "One or more fields failed validation.", fields }
+    const error = await failWith(422, body)
+    expect(error.fields).toEqual({})
+    expect(error.message).toBe("422: One or more fields failed validation.")
+    expect(error.body).toEqual(body) // raw value preserved
+  },
+)
+
+test("a field error without a detail falls back to its code", async () => {
+  // Naming the field with no cause at all would be worse than naming the code.
+  const error = await failWith(422, {
+    detail: "invalid",
+    fields: { choices: [{ error: "required" }] },
+  })
+  expect(error.message).toContain("(choices: required)")
+})
+
+test("field errors reach the subclasses", async () => {
+  // Parsed in the base constructor, so no subclass has to opt in.
+  const error = await failWith(404, {
+    detail: "not found",
+    fields: { file_id: [{ detail: "does not exist" }] },
+  })
+  expect(error).toBeInstanceOf(exc.NotFoundError)
+  expect(error.fields).toEqual({ file_id: [{ detail: "does not exist" }] })
+  expect(error.message).toContain("(file_id: does not exist)")
+})
+
+test("a __proto__ field name stays a plain key", async () => {
+  const error = await failWith(
+    422,
+    JSON.parse('{"detail":"x","fields":{"__proto__":[{"detail":"bad"}]}}'),
+  )
+  expect(Object.keys(error.fields)).toEqual(["__proto__"])
+  expect(Object.getPrototypeOf(error.fields)).toBe(Object.prototype)
+})
+
+test("field errors and the batch index both land in the message", async () => {
+  // Order matters: what went wrong, then which action it went wrong on.
+  const error = await failWith(422, { ...VALIDATION_BODY, index: 3 })
+  expect(error.message.endsWith("(choices: must be a non-empty list) (action 3)")).toBe(
+    true,
+  )
+  expect(error.index).toBe(3)
+})
